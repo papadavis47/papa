@@ -1,0 +1,11 @@
+[package]
+name = "papa"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# gpui core + platform — MUST be declared exactly like gpui-component declares them
+# (same URL, no rev). gpui-component floats gpui to the zed default branch; cargo only
+# unifies into a single `gpui` crate when the source string matches (no `rev=`).
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }

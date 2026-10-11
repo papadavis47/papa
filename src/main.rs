@@ -1,4 +1,4 @@
-use gpui::{
+use gpui_kit::{
     App, Bounds, Context, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*, px,
     rgb, size,
 };
@@ -27,18 +27,19 @@ impl Render for HelloWorld {
                 div()
                     .flex()
                     .gap_2()
-                    .child(div().size_8().bg(gpui::red()))
-                    .child(div().size_8().bg(gpui::green()))
-                    .child(div().size_8().bg(gpui::blue()))
-                    .child(div().size_8().bg(gpui::yellow()))
-                    .child(div().size_8().bg(gpui::black()))
-                    .child(div().size_8().bg(gpui::white())),
+                    .child(div().size_8().bg(gpui_kit::red()))
+                    .child(div().size_8().bg(gpui_kit::green()))
+                    .child(div().size_8().bg(gpui_kit::blue()))
+                    .child(div().size_8().bg(gpui_kit::yellow()))
+                    .child(div().size_8().bg(gpui_kit::black()))
+                    .child(div().size_8().bg(gpui_kit::white())),
             )
     }
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_kit::application().run(|cx: &mut App| {
+        gpui_kit::init(cx);
         let bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
         cx.open_window(
             WindowOptions {

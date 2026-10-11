@@ -4,10 +4,11 @@
 `papa` — Rust (edition 2024) desktop app built on GPUI via [gpui-kit](https://gpui-kit.com).
 
 ## Dependencies
-- Only dep: `gpui-kit`. It bundles gpui (`gpui-pre`), gpui_platform (font-kit/x11/wayland), gpui-base, gpui-component, assets at matching versions.
+- Only UI dep: `gpui-kit`, and only the `papa` app crate depends on it. It bundles gpui (`gpui-pre`), gpui_platform (font-kit/x11/wayland), gpui-base, gpui-component, assets at matching versions.
 - Never add `gpui`, `gpui_platform`, or `gpui-component` as separate deps — creates a second, incompatible gpui crate.
 - Import everything through the facade: `use gpui_kit::*;`, components via `gpui_kit::component::...`.
 - App entry: `gpui_kit::application().run(|cx| { gpui_kit::init(cx); ... })`. `init` required before using components.
+- Non-UI crates (storage, crypto, serialization, PDF, HTTP) go in `papa-core`, `papa-pdf`, `papa-relay`, `papa-proto` — add them deliberately.
 - `Cargo.lock` committed; bump deps deliberately with `cargo update`.
 
 ## Commands

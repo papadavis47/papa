@@ -284,7 +284,7 @@ Each phase ends with something runnable. Each one has a short "what you'll learn
 
 | # | Phase | Delivers | You'll learn |
 |---|---|---|---|
-| 0 | **Foundations** | Cargo workspace, crate split, CI (build + clippy on Linux/macOS) | workspaces, features, `cargo` profiles |
+| 0 ✅ | **Foundations** | Cargo workspace, crate split, CI (build + clippy on Linux/macOS) | workspaces, features, `cargo` profiles |
 | 1 | **App shell** | Window, `Root`, custom `TitleBar`, Sidebar + 3 resizable panes with placeholder data, Light/Dark toggle, first actions + keybindings | `Entity`, `Render` vs `RenderOnce`, `Context`, actions, key contexts, the gpui-kit layout helpers (`h_flex`/`v_flex`) |
 | 2 | **Local storage** | `papa-core::Store` on `turso`, migrations, the database actor thread, CRUD for children and labels wired into the UI | async Rust, tokio vs GPUI executors, channels, `thiserror`/`anyhow`, testing with a temporary database |
 | 3 | **Notes** | Note list (virtualized), Markdown editor + preview, autosave, assign to children, labels, filtering, search | `EditorState`, subscriptions/events, debouncing with tasks, `TextView` |

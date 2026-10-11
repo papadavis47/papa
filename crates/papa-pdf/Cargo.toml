@@ -1,0 +1,13 @@
+[package]
+name = "papa-pdf"
+description = "Papa PDF export: Markdown notes to typeset PDF."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

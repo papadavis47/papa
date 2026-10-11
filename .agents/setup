@@ -67,5 +67,5 @@ fi
 
 step "cargo fetch" cargo fetch --locked
 # Prebuild debug artifacts so the snapshot ships a warm target/ for build, run, and clippy.
-step "cargo build" cargo build --locked
-step "cargo clippy" cargo clippy --locked
+step "cargo build" cargo build --workspace --all-targets --locked
+step "cargo clippy" cargo clippy --workspace --all-targets --locked

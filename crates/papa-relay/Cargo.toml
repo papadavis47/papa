@@ -1,0 +1,13 @@
+[package]
+name = "papa-relay"
+description = "Papa relay server: accounts, share database provisioning and scoped tokens."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

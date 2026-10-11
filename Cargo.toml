@@ -1,10 +1,24 @@
-[package]
-name = "papa"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# `cargo run` / `cargo build` at the root target the desktop app.
+default-members = ["crates/papa"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/papadavis47/papa"
+publish = false
 
-[dependencies]
-# gpui-kit bundles gpui (gpui-pre), gpui_platform (font-kit/x11/wayland), gpui-base,
-# gpui-component and assets at matching versions. Don't list gpui separately —
-# a second gpui crate won't unify with the one gpui-kit uses.
-gpui-kit = "0.7"
+[workspace.dependencies]
+papa-core = { path = "crates/papa-core" }
+papa-proto = { path = "crates/papa-proto" }
+papa-pdf = { path = "crates/papa-pdf" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

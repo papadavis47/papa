@@ -1,3 +1,29 @@
+# Build output
 /target
+
+# Owner's private notes (never commit)
 /learning/
+
+# Amp orb
 /.amp/portals/*
+
+# Secrets: real env files stay local; .env.example documents variable names
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local databases and sync replicas (real family data must never be committed)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+/shares/
+/vault/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

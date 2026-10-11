@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Prepares a fresh Amp orb (Debian 12) to build, lint, and run papa.
+# Idempotent: safe to rerun on a warm snapshot.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local label="$1"
+  shift
+  echo "==> $label"
+  local start=$SECONDS
+  "$@"
+  echo "<== $label ($((SECONDS - start))s)"
+}
+
+# Native libraries gpui links against on Linux (X11, Wayland, fonts, Vulkan).
+apt_packages=(
+  build-essential
+  pkg-config
+  libfontconfig-dev
+  libfreetype-dev
+  libwayland-dev
+  libxkbcommon-dev
+  libxkbcommon-x11-dev
+  libx11-xcb-dev
+  libvulkan-dev
+)
+
+install_apt_packages() {
+  local missing=()
+  local pkg
+  for pkg in "${apt_packages[@]}"; do
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing+=("$pkg")
+  done
+  if ((${#missing[@]} == 0)); then
+    echo "all apt packages present"
+    return
+  fi
+  echo "installing: ${missing[*]}"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+}
+
+install_rust() {
+  if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+      sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable --component clippy,rustfmt
+  else
+    "$HOME/.cargo/bin/rustup" component add clippy rustfmt
+  fi
+}
+
+step "apt packages" install_apt_packages
+step "rust toolchain" install_rust
+
+# rustup's installer cannot update this running script's environment.
+# shellcheck disable=SC1091
+source "$HOME/.cargo/env"
+
+# Make cargo available to Amp and supervised services (non-interactive login shells).
+profile_marker="# rustup cargo env"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n%s\n. "$HOME/.cargo/env"\n' "$profile_marker" >>"$HOME/.bash_profile"
+fi
+
+step "cargo fetch" cargo fetch --locked
+# Prebuild debug artifacts so the snapshot ships a warm target/ for build, run, and clippy.
+step "cargo build" cargo build --locked
+step "cargo clippy" cargo clippy --locked

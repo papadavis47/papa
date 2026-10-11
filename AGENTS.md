@@ -3,6 +3,13 @@
 ## Project
 `papa` — Rust (edition 2024) desktop app built on GPUI via [gpui-kit](https://gpui-kit.com). Roadmap and design: `PLAN.md`; decisions: `docs/adr/`.
 
+## Workflow (learning project)
+- The owner is learning Rust, GPUI/gpui-kit and Turso, and the repo doubles as a portfolio.
+- Work one `PLAN.md` phase at a time. Don't start the next phase until the owner has reviewed the current one.
+- Before writing code for a phase, explain the Rust/GPUI/Turso concepts it introduces, briefly and concretely, tied to the code you're about to write.
+- Do each phase on a branch (e.g. `phase-1-app-shell`) and open a PR with a clear description. Don't push straight to `main` unless asked.
+- When a phase is merged, tick it off in `PLAN.md`. Record any significant new decision as an ADR in `docs/adr/`.
+
 ## Layout
 Cargo workspace; root `Cargo.toml` holds shared package metadata, lints and path deps.
 - `crates/papa` — desktop app (only crate using gpui-kit); default member, so `cargo run` launches it.

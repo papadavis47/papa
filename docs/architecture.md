@@ -16,6 +16,35 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 - **papa-pdf** turns Markdown into PDF. It is kept separate because the PDF toolchain is heavy to compile.
 - **papa-relay** is a small HTTP service: father accounts, invite codes, creating one cloud database per shared child, and issuing short-lived, database-scoped tokens.
 
+## Desktop app
+
+```diagram
+┌─ PapaApp (Entity, Render) ─────────────────────────────────────────┐
+│ owns: Journal (sample data), Selection, sidebar_visible, focus     │
+│                                                                    │
+│ AppTitleBar ── sidebar toggle · "Papa" · theme toggle              │
+│ h_resizable ┬─ AppSidebar   children, labels, Messages, Settings   │
+│             ├─ NoteList     key context "NoteList"                 │
+│             └─ NoteView                                            │
+│ StatusBar                                                          │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+- **State lives in entities, presentation in components.** `PapaApp` is the only stateful view. The pieces in `crates/papa/src/ui/` are `RenderOnce` components: built each frame from data passed in, consumed when rendered. They report clicks back through callbacks the parent creates with `cx.listener`.
+- **Selection logic is plain Rust** (`state.rs`), unit-tested without a window.
+- **Actions** are the single entry point for commands. A keyboard shortcut and a button dispatch the same action:
+  - App-level actions (`Quit`, `ToggleTheme`) are handled with `cx.on_action`, because they act on global state.
+  - View-level actions (`ToggleSidebar`, `SelectNextNote`, `SelectPreviousNote`) are handled by `PapaApp`, because they change its state.
+- **Key contexts** scope bindings. `PapaApp` bindings work anywhere in the window. `NoteList` bindings (↑/↓) work only while the note list has focus, so a future editor keeps its arrow keys.
+- **Window chrome:** the app draws its own title bar. On Linux it asks for client-side decorations so the compositor doesn't add a second one.
+
+| Shortcut (⌘ on macOS, Ctrl elsewhere) | Action |
+|---|---|
+| ⌘Q | Quit |
+| ⌘⇧L | Toggle light/dark |
+| ⌘B | Toggle sidebar |
+| ↑ / ↓ (note list focused) | Previous / next note |
+
 ## Data flow (planned)
 
 1. The father's vault is a local Turso database. It is the source of truth and works offline.

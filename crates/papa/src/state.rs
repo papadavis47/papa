@@ -1,52 +1,41 @@
 //! What the user has selected: plain Rust, no GPUI, so it is unit-tested
 //! without opening a window.
 
-use crate::placeholder::{ChildId, Journal, NoteId};
+use papa_core::ChildId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     pub child: Option<ChildId>,
-    pub note: Option<NoteId>,
 }
 
 impl Selection {
-    /// Starts on the first child and that child's newest note.
-    pub fn first(journal: &Journal) -> Self {
-        let mut selection = Self {
-            child: None,
-            note: None,
-        };
-        if let Some(child) = journal.children.first() {
-            selection.select_child(child.id, journal);
-        }
-        selection
-    }
-
-    /// Switches child and selects the newest note about them.
-    pub fn select_child(&mut self, child: ChildId, journal: &Journal) {
+    pub fn select_child(&mut self, child: ChildId) {
         self.child = Some(child);
-        self.note = journal.notes_for(child).next().map(|note| note.id);
     }
 
-    pub fn select_note(&mut self, note: NoteId) {
-        self.note = Some(note);
+    /// Keeps the selection valid after the list of children changed: if the
+    /// selected child is gone (or nothing is selected), selects the first.
+    pub fn reconcile(&mut self, children: &[ChildId]) {
+        if self.child.is_none_or(|child| !children.contains(&child)) {
+            self.child = children.first().copied();
+        }
     }
 
-    /// Moves the note selection by `delta` within `visible`, stopping at
-    /// either end. With nothing selected, any move lands on the first note.
-    pub fn move_note(&mut self, delta: isize, visible: &[NoteId]) {
-        let Some(last) = visible.len().checked_sub(1) else {
-            self.note = None;
+    /// Moves the selection by `delta` within `children`, stopping at either
+    /// end. With nothing selected, any move lands on the first child.
+    pub fn move_child(&mut self, delta: isize, children: &[ChildId]) {
+        let Some(last) = children.len().checked_sub(1) else {
+            self.child = None;
             return;
         };
         let next = match self
-            .note
-            .and_then(|note| visible.iter().position(|id| *id == note))
+            .child
+            .and_then(|child| children.iter().position(|id| *id == child))
         {
             Some(current) => current.saturating_add_signed(delta).min(last),
             None => 0,
         };
-        self.note = Some(visible[next]);
+        self.child = Some(children[next]);
     }
 }
 
@@ -54,68 +43,85 @@ impl Selection {
 mod tests {
     use super::*;
 
-    const NOTES: [NoteId; 3] = [NoteId(10), NoteId(20), NoteId(30)];
-
-    fn selected(note: Option<NoteId>) -> Selection {
-        Selection {
-            child: Some(ChildId(1)),
-            note,
-        }
+    fn ids() -> [ChildId; 3] {
+        [ChildId::new(), ChildId::new(), ChildId::new()]
     }
 
-    #[test]
-    fn starts_on_first_child_and_newest_note() {
-        let journal = Journal::sample();
-        let selection = Selection::first(&journal);
-
-        assert_eq!(selection.child, Some(ChildId(1)));
-        assert_eq!(selection.note, Some(NoteId(1)));
-    }
-
-    #[test]
-    fn switching_child_selects_their_newest_note() {
-        let journal = Journal::sample();
-        let mut selection = Selection::first(&journal);
-
-        selection.select_child(ChildId(2), &journal);
-
-        assert_eq!(selection.child, Some(ChildId(2)));
-        assert_eq!(selection.note, Some(NoteId(3)));
+    fn selected(child: Option<ChildId>) -> Selection {
+        Selection { child }
     }
 
     #[test]
     fn moves_down_and_up() {
-        let mut selection = selected(Some(NoteId(10)));
+        let children = ids();
+        let mut selection = selected(Some(children[0]));
 
-        selection.move_note(1, &NOTES);
-        assert_eq!(selection.note, Some(NoteId(20)));
+        selection.move_child(1, &children);
+        assert_eq!(selection.child, Some(children[1]));
 
-        selection.move_note(-1, &NOTES);
-        assert_eq!(selection.note, Some(NoteId(10)));
+        selection.move_child(-1, &children);
+        assert_eq!(selection.child, Some(children[0]));
     }
 
     #[test]
     fn stops_at_both_ends() {
-        let mut selection = selected(Some(NoteId(10)));
-        selection.move_note(-1, &NOTES);
-        assert_eq!(selection.note, Some(NoteId(10)));
+        let children = ids();
 
-        let mut selection = selected(Some(NoteId(30)));
-        selection.move_note(1, &NOTES);
-        assert_eq!(selection.note, Some(NoteId(30)));
+        let mut selection = selected(Some(children[0]));
+        selection.move_child(-1, &children);
+        assert_eq!(selection.child, Some(children[0]));
+
+        let mut selection = selected(Some(children[2]));
+        selection.move_child(1, &children);
+        assert_eq!(selection.child, Some(children[2]));
     }
 
     #[test]
-    fn without_a_selection_lands_on_first_note() {
+    fn without_a_selection_a_move_lands_on_the_first_child() {
+        let children = ids();
         let mut selection = selected(None);
-        selection.move_note(-1, &NOTES);
-        assert_eq!(selection.note, Some(NoteId(10)));
+
+        selection.move_child(-1, &children);
+
+        assert_eq!(selection.child, Some(children[0]));
     }
 
     #[test]
-    fn empty_list_clears_selection() {
-        let mut selection = selected(Some(NoteId(10)));
-        selection.move_note(1, &[]);
-        assert_eq!(selection.note, None);
+    fn an_empty_list_clears_the_selection() {
+        let mut selection = selected(Some(ChildId::new()));
+        selection.move_child(1, &[]);
+        assert_eq!(selection.child, None);
+    }
+
+    #[test]
+    fn reconcile_keeps_a_child_that_still_exists() {
+        let children = ids();
+        let mut selection = selected(Some(children[1]));
+
+        selection.reconcile(&children);
+
+        assert_eq!(selection.child, Some(children[1]));
+    }
+
+    #[test]
+    fn reconcile_moves_off_a_deleted_child() {
+        let children = ids();
+        let mut selection = selected(Some(ChildId::new()));
+
+        selection.reconcile(&children);
+
+        assert_eq!(selection.child, Some(children[0]));
+    }
+
+    #[test]
+    fn reconcile_selects_the_first_child_once_there_is_one() {
+        let children = ids();
+        let mut selection = selected(None);
+
+        selection.reconcile(&children);
+        assert_eq!(selection.child, Some(children[0]));
+
+        selection.reconcile(&[]);
+        assert_eq!(selection.child, None);
     }
 }

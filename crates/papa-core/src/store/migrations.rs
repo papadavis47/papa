@@ -11,7 +11,10 @@ use crate::{Error, Result};
 /// Migration `n` (counting from 1) upgrades a vault from version `n - 1` to
 /// `n`. Append only: a migration that has shipped is never edited; changes go
 /// in a new one.
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_children_and_labels.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_children_and_labels.sql"),
+    include_str!("migrations/0002_notes.sql"),
+];
 
 /// The schema version this build creates and understands.
 pub(super) const LATEST: i64 = MIGRATIONS.len() as i64;

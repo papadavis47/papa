@@ -2,6 +2,7 @@
 //! and the SQL together. Each test gets its own in-memory or temporary vault.
 
 use super::*;
+use crate::{NoteDraft, NoteFilter, NoteQuery};
 
 fn draft(name: &str, color: u32) -> ChildDraft {
     ChildDraft {
@@ -198,4 +199,291 @@ async fn a_vault_from_a_newer_version_is_refused() {
         Err(Error::SchemaTooNew { found, supported })
             if found == future && supported == migrations::LATEST
     ));
+}
+
+// --- Notes ---
+
+fn note(title: &str, body: &str) -> NoteDraft {
+    NoteDraft {
+        title: title.into(),
+        body: body.into(),
+        ..NoteDraft::default()
+    }
+}
+
+fn query(filter: NoteFilter, search: &str) -> NoteQuery {
+    NoteQuery {
+        filter,
+        search: search.into(),
+    }
+}
+
+async fn titles(store: &Store, query: NoteQuery) -> Vec<String> {
+    let notes = store.notes(query).await.unwrap();
+    notes.into_iter().map(|note| note.title).collect()
+}
+
+#[tokio::test]
+async fn notes_are_listed_newest_first() {
+    let store = Store::open_in_memory().await.unwrap();
+    for title in ["First", "Second", "Third"] {
+        store.add_note(note(title, "")).await.unwrap();
+    }
+
+    let all = titles(&store, NoteQuery::default()).await;
+
+    assert_eq!(all, ["Third", "Second", "First"]);
+}
+
+#[tokio::test]
+async fn a_new_note_round_trips() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let funny = store.add_label("funny").await.unwrap();
+
+    let added = store
+        .add_note(NoteDraft {
+            title: "  First bike ride ".into(),
+            body: "She refused the *training wheels*.".into(),
+            children: vec![emma.id],
+            labels: vec![funny.id],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(added.title, "First bike ride", "titles are trimmed");
+    assert_eq!(added.created_at, added.updated_at);
+    assert_eq!(store.note(added.id).await.unwrap(), added);
+    let listed = store.notes(NoteQuery::default()).await.unwrap();
+    assert_eq!(listed, [added.summary()]);
+    assert_eq!(listed[0].preview, "She refused the training wheels.");
+}
+
+#[tokio::test]
+async fn saving_text_keeps_links_and_creation_time() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let added = store
+        .add_note(NoteDraft {
+            children: vec![emma.id],
+            ..note("Draft", "")
+        })
+        .await
+        .unwrap();
+
+    let saved = store
+        .update_note_text(added.id, "School play", "Leo was a tree.")
+        .await
+        .unwrap();
+
+    assert_eq!(saved.title, "School play");
+    assert_eq!(saved.body, "Leo was a tree.");
+    assert_eq!(saved.children, [emma.id]);
+    assert_eq!(saved.created_at, added.created_at);
+    assert!(saved.updated_at >= added.updated_at);
+    assert_eq!(store.note(added.id).await.unwrap(), saved);
+}
+
+#[tokio::test]
+async fn notes_can_be_filtered_by_child_or_label() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let leo = store.add_child(draft("Leo", 0)).await.unwrap();
+    let funny = store.add_label("funny").await.unwrap();
+    let both = NoteDraft {
+        children: vec![emma.id, leo.id],
+        labels: vec![funny.id],
+        ..note("Beach day", "")
+    };
+    let emma_only = NoteDraft {
+        children: vec![emma.id],
+        ..note("Bike ride", "")
+    };
+    store.add_note(both).await.unwrap();
+    store.add_note(emma_only).await.unwrap();
+    store.add_note(note("Unassigned", "")).await.unwrap();
+
+    let for_emma = titles(&store, query(NoteFilter::Child(emma.id), "")).await;
+    let for_leo = titles(&store, query(NoteFilter::Child(leo.id), "")).await;
+    let funny_notes = titles(&store, query(NoteFilter::Label(funny.id), "")).await;
+
+    assert_eq!(for_emma, ["Bike ride", "Beach day"]);
+    assert_eq!(for_leo, ["Beach day"]);
+    assert_eq!(funny_notes, ["Beach day"]);
+}
+
+#[tokio::test]
+async fn search_matches_every_word_ignoring_case() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let bike = NoteDraft {
+        children: vec![emma.id],
+        ..note("First bike ride", "Émilie came too.")
+    };
+    store.add_note(bike).await.unwrap();
+    store
+        .add_note(note("School play", "Leo was a tree."))
+        .await
+        .unwrap();
+
+    let all = NoteFilter::All;
+    assert_eq!(
+        titles(&store, query(all, "BIKE")).await,
+        ["First bike ride"]
+    );
+    assert_eq!(
+        titles(&store, query(all, "émilie")).await,
+        ["First bike ride"]
+    );
+    assert_eq!(
+        titles(&store, query(all, "bik tre")).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(titles(&store, query(all, "tree")).await, ["School play"]);
+    // A search narrows the filter, it doesn't replace it.
+    let emma_tree = query(NoteFilter::Child(emma.id), "tree");
+    assert!(titles(&store, emma_tree).await.is_empty());
+    // SQL wildcards are just characters.
+    assert!(titles(&store, query(all, "%")).await.is_empty());
+}
+
+#[tokio::test]
+async fn links_are_listed_in_sidebar_order() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let leo = store.add_child(draft("Leo", 0)).await.unwrap();
+    let school = store.add_label("school").await.unwrap();
+    let funny = store.add_label("Funny").await.unwrap();
+    let added = store.add_note(note("Beach day", "")).await.unwrap();
+
+    let note = store
+        .set_note_children(added.id, vec![leo.id, emma.id, leo.id])
+        .await
+        .unwrap();
+    let note = store
+        .set_note_labels(note.id, vec![school.id, funny.id])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        note.children,
+        [emma.id, leo.id],
+        "sorted, duplicates dropped"
+    );
+    assert_eq!(note.labels, [funny.id, school.id]);
+    let listed = store.notes(NoteQuery::default()).await.unwrap();
+    assert_eq!(listed[0].children, note.children);
+    assert_eq!(listed[0].labels, note.labels);
+
+    let cleared = store.set_note_children(note.id, vec![]).await.unwrap();
+    assert!(cleared.children.is_empty());
+    assert_eq!(cleared.labels, note.labels);
+}
+
+#[tokio::test]
+async fn linking_a_missing_child_changes_nothing() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let added = store
+        .add_note(NoteDraft {
+            children: vec![emma.id],
+            ..note("Beach day", "")
+        })
+        .await
+        .unwrap();
+
+    let result = store
+        .set_note_children(added.id, vec![ChildId::new()])
+        .await;
+    let new_note = store
+        .add_note(NoteDraft {
+            children: vec![ChildId::new()],
+            ..note("Orphan", "")
+        })
+        .await;
+
+    assert!(matches!(result, Err(Error::Database(_))), "{result:?}");
+    assert!(matches!(new_note, Err(Error::Database(_))), "{new_note:?}");
+    assert_eq!(store.note(added.id).await.unwrap().children, [emma.id]);
+    assert_eq!(titles(&store, NoteQuery::default()).await, ["Beach day"]);
+}
+
+#[tokio::test]
+async fn deleting_a_child_or_label_keeps_its_notes() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let funny = store.add_label("funny").await.unwrap();
+    let added = store
+        .add_note(NoteDraft {
+            children: vec![emma.id],
+            labels: vec![funny.id],
+            ..note("Beach day", "")
+        })
+        .await
+        .unwrap();
+
+    store.delete_child(emma.id).await.unwrap();
+    store.delete_label(funny.id).await.unwrap();
+
+    let note = store.note(added.id).await.unwrap();
+    assert!(note.children.is_empty());
+    assert!(note.labels.is_empty());
+}
+
+#[tokio::test]
+async fn a_deleted_note_is_gone_and_its_text_wiped() {
+    let store = Store::open_in_memory().await.unwrap();
+    let emma = store.add_child(draft("Emma", 0)).await.unwrap();
+    let added = store
+        .add_note(NoteDraft {
+            children: vec![emma.id],
+            ..note("Secret", "Private words")
+        })
+        .await
+        .unwrap();
+
+    store.delete_note(added.id).await.unwrap();
+
+    assert!(store.notes(NoteQuery::default()).await.unwrap().is_empty());
+    let for_emma = query(NoteFilter::Child(emma.id), "");
+    assert!(store.notes(for_emma).await.unwrap().is_empty());
+    assert!(matches!(
+        store.note(added.id).await,
+        Err(Error::NotFound("note"))
+    ));
+    // Changing it again reports it missing, like any other row.
+    let save = store.update_note_text(added.id, "x", "y").await;
+    let delete = store.delete_note(added.id).await;
+    assert!(matches!(save, Err(Error::NotFound("note"))));
+    assert!(matches!(delete, Err(Error::NotFound("note"))));
+}
+
+#[tokio::test]
+async fn a_deleted_note_leaves_only_a_tombstone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    let store = Store::open(&path).await.unwrap();
+    let added = store
+        .add_note(note("Secret", "Private words"))
+        .await
+        .unwrap();
+    store.delete_note(added.id).await.unwrap();
+    drop(store);
+
+    let db = Db::open(&Location::File(path)).await.unwrap();
+    let mut rows = db
+        .connection()
+        .query(
+            "SELECT title, body_md, deleted_at IS NOT NULL FROM note WHERE id = ?1",
+            [added.id.to_string()],
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let (title, body, deleted): (String, String, i64) = (
+        row.get(0).unwrap(),
+        row.get(1).unwrap(),
+        row.get(2).unwrap(),
+    );
+    assert_eq!((title.as_str(), body.as_str(), deleted), ("", "", 1));
 }

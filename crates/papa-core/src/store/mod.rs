@@ -22,7 +22,10 @@ use std::thread;
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{Child, ChildDraft, ChildId, Error, Label, LabelId, Result};
+use crate::{
+    Child, ChildDraft, ChildId, Error, Label, LabelId, Note, NoteDraft, NoteId, NoteQuery,
+    NoteSummary, Result,
+};
 use db::{Db, Location};
 
 /// A handle to the vault. Every method sends a request to the database thread
@@ -48,6 +51,13 @@ enum Request {
     AddLabel(String, Reply<Label>),
     RenameLabel(LabelId, String, Reply<Label>),
     DeleteLabel(LabelId, Reply<()>),
+    Notes(NoteQuery, Reply<Vec<NoteSummary>>),
+    Note(NoteId, Reply<Note>),
+    AddNote(NoteDraft, Reply<Note>),
+    UpdateNoteText(NoteId, String, String, Reply<Note>),
+    SetNoteChildren(NoteId, Vec<ChildId>, Reply<Note>),
+    SetNoteLabels(NoteId, Vec<LabelId>, Reply<Note>),
+    DeleteNote(NoteId, Reply<()>),
 }
 
 impl Store {
@@ -120,6 +130,48 @@ impl Store {
         self.call(|reply| Request::DeleteLabel(id, reply)).await
     }
 
+    /// The notes `query` asks for, newest first.
+    pub async fn notes(&self, query: NoteQuery) -> Result<Vec<NoteSummary>> {
+        self.call(|reply| Request::Notes(query, reply)).await
+    }
+
+    /// One note, in full. Fails with [`Error::NotFound`] if it was deleted.
+    pub async fn note(&self, id: NoteId) -> Result<Note> {
+        self.call(|reply| Request::Note(id, reply)).await
+    }
+
+    pub async fn add_note(&self, draft: NoteDraft) -> Result<Note> {
+        self.call(|reply| Request::AddNote(draft, reply)).await
+    }
+
+    /// Saves a note's title and body, and returns the note as stored.
+    pub async fn update_note_text(
+        &self,
+        id: NoteId,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Result<Note> {
+        let (title, body) = (title.into(), body.into());
+        self.call(|reply| Request::UpdateNoteText(id, title, body, reply))
+            .await
+    }
+
+    /// Replaces the children a note is about.
+    pub async fn set_note_children(&self, id: NoteId, children: Vec<ChildId>) -> Result<Note> {
+        self.call(|reply| Request::SetNoteChildren(id, children, reply))
+            .await
+    }
+
+    /// Replaces a note's labels.
+    pub async fn set_note_labels(&self, id: NoteId, labels: Vec<LabelId>) -> Result<Note> {
+        self.call(|reply| Request::SetNoteLabels(id, labels, reply))
+            .await
+    }
+
+    pub async fn delete_note(&self, id: NoteId) -> Result<()> {
+        self.call(|reply| Request::DeleteNote(id, reply)).await
+    }
+
     /// Sends the request built by `request` and waits for the reply.
     async fn call<T>(&self, request: impl FnOnce(Reply<T>) -> Request) -> Result<T> {
         let (reply, response) = oneshot::channel();
@@ -148,7 +200,7 @@ fn serve(
     };
 
     runtime.block_on(async move {
-        let db = match Db::open(&location).await {
+        let mut db = match Db::open(&location).await {
             Ok(db) => db,
             Err(err) => {
                 let _ = opened.send(Err(err));
@@ -159,12 +211,12 @@ fn serve(
 
         // `recv` returns `None` once every `Store` clone has been dropped.
         while let Some(request) = inbox.recv().await {
-            handle(&db, request).await;
+            handle(&mut db, request).await;
         }
     });
 }
 
-async fn handle(db: &Db, request: Request) {
+async fn handle(db: &mut Db, request: Request) {
     // `send` fails only if the caller stopped waiting (say, its window
     // closed). The work is done either way, so the error is ignored.
     match request {
@@ -191,6 +243,27 @@ async fn handle(db: &Db, request: Request) {
         }
         Request::DeleteLabel(id, reply) => {
             let _ = reply.send(db.delete_label(id).await);
+        }
+        Request::Notes(query, reply) => {
+            let _ = reply.send(db.notes(&query).await);
+        }
+        Request::Note(id, reply) => {
+            let _ = reply.send(db.note(id).await);
+        }
+        Request::AddNote(draft, reply) => {
+            let _ = reply.send(db.add_note(draft).await);
+        }
+        Request::UpdateNoteText(id, title, body, reply) => {
+            let _ = reply.send(db.update_note_text(id, &title, &body).await);
+        }
+        Request::SetNoteChildren(id, children, reply) => {
+            let _ = reply.send(db.set_note_children(id, &children).await);
+        }
+        Request::SetNoteLabels(id, labels, reply) => {
+            let _ = reply.send(db.set_note_labels(id, &labels).await);
+        }
+        Request::DeleteNote(id, reply) => {
+            let _ = reply.send(db.delete_note(id).await);
         }
     }
 }

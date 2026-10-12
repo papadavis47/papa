@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 # Finds the OS data directory for the default vault location.
 dirs = "7.0.0"
+# Timestamps for notes (stored as Unix milliseconds).
+jiff = "0.2.38"
 thiserror = "2.0.21"
 # Runs the database actor: a single-threaded runtime on its own thread, plus
 # the channels the UI uses to talk to it.

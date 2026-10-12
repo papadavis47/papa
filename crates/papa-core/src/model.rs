@@ -6,6 +6,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::{Error, Result};
@@ -61,6 +62,10 @@ id_type!(
     /// Identifies a label.
     LabelId
 );
+id_type!(
+    /// Identifies a note.
+    NoteId
+);
 
 /// A child the father writes about.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +90,149 @@ pub struct Label {
     pub id: LabelId,
     /// Stored without the `#` the UI shows in front of it.
     pub name: String,
+}
+
+/// A note, in full: what the editor loads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub id: NoteId,
+    /// May be empty; the UI shows "Untitled".
+    pub title: String,
+    /// Markdown.
+    pub body: String,
+    /// The children the note is about, in sidebar order.
+    pub children: Vec<ChildId>,
+    /// Its labels, alphabetically.
+    pub labels: Vec<LabelId>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl Note {
+    /// The note as the list shows it.
+    pub fn summary(&self) -> NoteSummary {
+        NoteSummary {
+            id: self.id,
+            title: self.title.clone(),
+            preview: preview(&self.body),
+            children: self.children.clone(),
+            labels: self.labels.clone(),
+            created_at: self.created_at,
+        }
+    }
+}
+
+/// One row of the note list: the note without its full body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteSummary {
+    pub id: NoteId,
+    pub title: String,
+    /// The start of the body as one line of plain text. See [`preview`].
+    pub preview: String,
+    pub children: Vec<ChildId>,
+    pub labels: Vec<LabelId>,
+    pub created_at: Timestamp,
+}
+
+/// What the father enters when creating a note. The store assigns the id and
+/// timestamps.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoteDraft {
+    pub title: String,
+    pub body: String,
+    pub children: Vec<ChildId>,
+    pub labels: Vec<LabelId>,
+}
+
+/// Which notes the list shows, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoteQuery {
+    pub filter: NoteFilter,
+    /// Words to look for in the title and body. Every word must appear,
+    /// ignoring case; an empty search matches every note. See [`SearchTerms`].
+    pub search: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum NoteFilter {
+    #[default]
+    All,
+    /// Notes about this child.
+    Child(ChildId),
+    /// Notes with this label.
+    Label(LabelId),
+}
+
+/// Longest [`NoteSummary::preview`], in characters.
+pub const PREVIEW_CHARS: usize = 120;
+
+/// The start of a Markdown body as one line of plain text, for the note
+/// list: blank lines dropped, heading, quote and list markers removed,
+/// emphasis and code markers removed, cut to [`PREVIEW_CHARS`].
+pub fn preview(body: &str) -> String {
+    let mut text = String::new();
+    for line in body.lines() {
+        let line = strip_block_marker(line.trim());
+        if line.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.extend(line.chars().filter(|c| !matches!(c, '*' | '`')));
+        if text.chars().count() > PREVIEW_CHARS {
+            break;
+        }
+    }
+    match text.char_indices().nth(PREVIEW_CHARS) {
+        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
+        None => text,
+    }
+}
+
+/// Drops a leading `#`, `>`, `-`, `*`, `+` or `1.` and the space after it.
+fn strip_block_marker(line: &str) -> &str {
+    let rest = line.trim_start_matches(['#', '>']);
+    let rest = match rest.strip_prefix(['-', '*', '+']) {
+        Some(after) if after.starts_with(' ') => after,
+        _ => rest,
+    };
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let rest = match rest[digits..].strip_prefix(". ") {
+        Some(after) if digits > 0 => after,
+        _ => rest,
+    };
+    rest.trim_start()
+}
+
+/// A search split into lowercase words. A note matches when every word
+/// appears somewhere in its title or body, ignoring case.
+///
+/// Lowercasing happens in Rust rather than SQL: SQLite's `lower()` and
+/// `LIKE` (and so Turso's) only fold ASCII, so "émilie" wouldn't find
+/// "Émilie".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchTerms(Vec<String>);
+
+impl SearchTerms {
+    pub fn new(search: &str) -> Self {
+        Self(search.split_whitespace().map(str::to_lowercase).collect())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn matches(&self, title: &str, body: &str) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        let title = title.to_lowercase();
+        let body = body.to_lowercase();
+        self.0
+            .iter()
+            .all(|term| title.contains(term.as_str()) || body.contains(term.as_str()))
+    }
 }
 
 /// Trims a child's name and checks it isn't empty or too long.
@@ -152,6 +300,43 @@ mod tests {
             check_color(0x1_00_00_00),
             Err(Error::InvalidColor(_))
         ));
+    }
+
+    #[test]
+    fn previews_are_one_line_of_plain_text() {
+        let body = "# First bike ride\n\n> She **refused** the `training` wheels!\n- one\n2. two";
+        assert_eq!(
+            preview(body),
+            "First bike ride She refused the training wheels! one two"
+        );
+    }
+
+    #[test]
+    fn previews_keep_markers_that_are_part_of_the_text() {
+        assert_eq!(preview("-5 degrees, 3.5 km"), "-5 degrees, 3.5 km");
+        assert_eq!(preview("   "), "");
+    }
+
+    #[test]
+    fn long_previews_are_cut_by_characters() {
+        let preview = preview(&"é".repeat(PREVIEW_CHARS + 10));
+        assert_eq!(preview.chars().count(), PREVIEW_CHARS + 1);
+        assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn search_needs_every_word_in_title_or_body() {
+        let terms = SearchTerms::new("  BIKE  émilie ");
+        assert!(terms.matches("First bike ride", "Émilie came along"));
+        assert!(!terms.matches("First bike ride", "Leo came along"));
+        assert!(SearchTerms::new("ike rid").matches("First bike ride", ""));
+    }
+
+    #[test]
+    fn an_empty_search_matches_everything() {
+        let terms = SearchTerms::new(" \t ");
+        assert!(terms.is_empty());
+        assert!(terms.matches("", ""));
     }
 
     #[test]

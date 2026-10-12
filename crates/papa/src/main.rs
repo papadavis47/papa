@@ -1,6 +1,7 @@
 //! Papa: a private, local-first journal for fathers.
 
 mod app;
+mod assets;
 mod state;
 mod theme;
 mod ui;
@@ -10,8 +11,8 @@ use gpui_kit::{AppContext as _, WindowBounds, WindowDecorations, WindowOptions, 
 
 fn main() {
     gpui_kit::application()
-        // The icon SVGs used by the components (and by us).
-        .with_assets(gpui_kit::assets::Assets)
+        // The icon SVGs used by the components and by us.
+        .with_assets(assets::PapaAssets)
         .run(|cx| {
             gpui_kit::init(cx);
             app::init(cx);

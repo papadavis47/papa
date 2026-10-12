@@ -3,18 +3,22 @@
 //! Most are `RenderOnce` components: short-lived structs built from data the
 //! parent passes in, consumed when rendered. State lives in the `PapaApp`
 //! entity; these only describe how it looks and report clicks back through
-//! callbacks. The exception is `NameForm`, an entity that holds a dialog's
-//! half-typed input.
+//! callbacks. The exceptions are entities with state of their own:
+//! `NameForm` holds a dialog's half-typed input, and `NoteEditor` the open
+//! note's text and its pending save.
 
+mod dates;
 pub mod dialogs;
 mod name_form;
+mod note_editor;
 mod note_list;
 mod note_view;
 mod sidebar;
 mod title_bar;
 
 pub use name_form::suggested_color;
-pub use note_list::NoteList;
+pub use note_editor::{NoteEditor, NoteEditorEvent};
+pub use note_list::{NOTE_SEARCH_CONTEXT, NoteList, NoteListEvent};
 pub use note_view::NoteView;
 pub use sidebar::{AppSidebar, SidebarEvent};
 pub use title_bar::AppTitleBar;

@@ -16,6 +16,8 @@ anyhow = "1.0.104"
 # a second gpui crate won't unify with the one gpui-kit uses.
 # This is the only crate in the workspace that may depend on gpui-kit.
 gpui-kit = "0.7"
+# Formats note dates in the local time zone.
+jiff = "0.2.38"
 papa-core.workspace = true
 
 [lints]

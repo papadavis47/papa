@@ -8,11 +8,15 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Errors the app only reports, with context added along the way. papa-core
+# uses typed `thiserror` errors instead, so callers can match on them.
+anyhow = "1.0.104"
 # gpui-kit bundles gpui (gpui-pre), gpui_platform (font-kit/x11/wayland), gpui-base,
 # gpui-component and assets at matching versions. Don't list gpui separately —
 # a second gpui crate won't unify with the one gpui-kit uses.
 # This is the only crate in the workspace that may depend on gpui-kit.
 gpui-kit = "0.7"
+papa-core.workspace = true
 
 [lints]
 workspace = true

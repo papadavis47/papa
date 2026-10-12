@@ -1,7 +1,6 @@
 //! Papa: a private, local-first journal for fathers.
 
 mod app;
-mod placeholder;
 mod state;
 mod theme;
 mod ui;

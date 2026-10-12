@@ -26,4 +26,4 @@ GPUI drives the UI from its own executors, and the UI thread must never block on
 - Requests are serialised, so check-then-write sequences (such as "is this label name taken?") can't race inside the app, without locks.
 - Adding an operation means touching three places: the `Request` enum, the `Store` method and the `Db` method. The compiler flags a missing `match` arm.
 - One slow query delays the ones queued behind it. For a single-user journal that's acceptable; read-heavy work could later get a second, read-only connection.
-- `turso` is used with default features off, so it doesn't install mimalloc as the whole app's global allocator; full-text search is enabled deliberately in Phase 3.
+- `turso` is used with default features off, so it doesn't install mimalloc as the whole app's global allocator; full-text search is left for later too (Phase 3 deferred it; see ADR 0008).

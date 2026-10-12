@@ -1,8 +1,18 @@
 //! Domain logic for Papa, independent of any UI.
 //!
-//! Planned contents (see `PLAN.md`):
-//! - models: children, notes, labels, attachments, messages
-//! - `Store`: the local vault on the `turso` crate, with migrations
-//! - crypto: key derivation and end-to-end encryption for shared notes
-//! - sharing: projecting shared notes into per-child sync replicas
-//! - settings: the per-machine settings file
+//! - [`model`]: children and labels, and the rules their names follow.
+//! - [`Store`]: the local vault on the `turso` crate. It runs on its own
+//!   database thread; the UI talks to it through this cheap, cloneable handle.
+//! - [`paths`]: where the vault lives on disk.
+//!
+//! Planned (see `PLAN.md`): notes and attachments, crypto for shared notes,
+//! the share projection, the relay client and the settings file.
+
+mod error;
+pub mod model;
+pub mod paths;
+mod store;
+
+pub use error::{Error, Result};
+pub use model::{Child, ChildDraft, ChildId, Label, LabelId};
+pub use store::Store;

@@ -10,5 +10,6 @@ Short records of significant decisions: the context, what we chose, and what it 
 | [0004](0004-database-per-child-end-to-end-encrypted-sharing.md) | One cloud database per shared child, end-to-end encrypted | Accepted |
 | [0005](0005-central-invite-only-relay.md) | One central, invite-only relay, multi-tenant by design | Accepted |
 | [0006](0006-typst-for-pdf-export.md) | Typst for PDF export | Proposed |
+| [0007](0007-database-actor-thread.md) | The vault runs as an actor on its own thread | Accepted |
 
 Template: copy [0000-template.md](0000-template.md).

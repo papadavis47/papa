@@ -5,7 +5,7 @@
 
 A private, local-first journal for fathers. Keep a profile for each of your children, write notes and save photos about them, and, if you choose, share some of those notes with a child, who can read them in the same app, export them to PDF and message you back.
 
-> **Status:** early development, built in public. Phase 0 (workspace and CI) and Phase 1 (app shell) are done. See [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** early development, built in public. Phase 0 (workspace and CI) and Phase 1 (app shell) are done; Phase 2 (local storage) is in progress. See [PLAN.md](PLAN.md) for the roadmap.
 
 ## Planned features
 
@@ -59,6 +59,12 @@ cargo run                       # run the desktop app
 cargo test --workspace          # run all tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
+```
+
+The app keeps its vault in your OS data directory (`~/.local/share/papa/vault.db` on Linux, `~/Library/Application Support/papa/vault.db` on macOS). To try things out without touching it, point `PAPA_VAULT` at another file:
+
+```sh
+PAPA_VAULT=/tmp/papa-dev.db cargo run
 ```
 
 ## Privacy

@@ -26,6 +26,9 @@ apt_packages=(
   libxkbcommon-x11-dev
   libx11-xcb-dev
   libvulkan-dev
+  # Driving the app on the orb Desktop (Wayland): screenshots and keystrokes.
+  grim
+  wtype
 )
 
 install_apt_packages() {

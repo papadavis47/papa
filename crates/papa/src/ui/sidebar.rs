@@ -10,6 +10,8 @@ use gpui_kit::component::{
 use gpui_kit::{App, ClickEvent, IntoElement, RenderOnce, Styled as _, Window, rgb};
 use papa_core::{Child, ChildId, Label, LabelId, NoteFilter};
 
+use crate::app::OpenSettings;
+
 /// Everything the sidebar can ask its parent to do.
 ///
 /// One enum and one callback, instead of a callback per button: the parent
@@ -134,14 +136,15 @@ impl RenderOnce for AppSidebar {
                 .on_click(send(SidebarEvent::Select(NoteFilter::All))),
         );
 
-        // Messages and Settings arrive in later phases.
+        // Messages arrive in a later phase. Settings dispatches the same
+        // action as ⌘, so both open the one Settings window.
         let footer = SidebarMenu::new().children([
             SidebarMenuItem::new("Messages")
                 .icon(IconName::Inbox)
                 .disable(true),
             SidebarMenuItem::new("Settings")
                 .icon(IconName::Settings)
-                .disable(true),
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
         ]);
 
         Sidebar::new("sidebar")

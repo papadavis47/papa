@@ -12,9 +12,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
     SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle,
-    Window, div, px, rgb, uniform_list,
+    Window, div, rems, rgb, uniform_list,
 };
 use jiff::Zoned;
+use papa_core::settings::Density;
 use papa_core::{Child, NoteId, NoteSummary};
 
 use super::dates;
@@ -50,6 +51,8 @@ pub struct NoteList {
     scroll: UniformListScrollHandle,
     /// Shown instead of the list when it's empty.
     empty_message: SharedString,
+    /// Compact rows are one line: no preview of the text.
+    density: Density,
     /// `false` until the vault is open.
     enabled: bool,
     on_event: OnEvent,
@@ -65,6 +68,7 @@ impl NoteList {
         search: Entity<InputState>,
         scroll: UniformListScrollHandle,
         empty_message: impl Into<SharedString>,
+        density: Density,
         enabled: bool,
         on_event: impl Fn(&NoteListEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
@@ -76,6 +80,7 @@ impl NoteList {
             search,
             scroll,
             empty_message: empty_message.into(),
+            density,
             enabled,
             on_event: Rc::new(on_event),
         }
@@ -142,7 +147,7 @@ impl RenderOnce for NoteList {
                         let on_event = self.on_event.clone();
                         let select = NoteListEvent::Select(note.id);
                         let selected = self.selected == Some(note.id);
-                        row(note, selected, &self.children, &now, cx)
+                        row(note, selected, self.density, &self.children, &now, cx)
                             .on_click(move |_, window, cx| on_event(&select, window, cx))
                     })
                     .collect::<Vec<_>>()
@@ -177,13 +182,16 @@ impl RenderOnce for NoteList {
 }
 
 /// One note: title and date, then the children's colours and the start of
-/// the text. Every row has the same height, as `uniform_list` requires.
+/// the text. Compact rows leave out the second line, and show the children's
+/// colours next to the title instead. Every row has the same height, as
+/// `uniform_list` requires.
 ///
 /// A plain `div` rather than gpui-kit's `ListItem`, whose inner wrapper
 /// can't shrink below its text and so pushed the date out of view.
 fn row(
     note: &NoteSummary,
     selected: bool,
+    density: Density,
     children: &[Child],
     now: &Zoned,
     cx: &App,
@@ -209,13 +217,23 @@ fn row(
         note.preview.clone().into()
     };
     let list_hover = cx.theme().list_hover;
+    let compact = density == Density::Compact;
+    let images = (note.images > 0).then(|| {
+        h_flex()
+            .flex_none()
+            .gap_0p5()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(Icon::new(gpui_kit::assets::IconName::Image).xsmall())
+            .child(note.images.to_string())
+    });
 
-    v_flex()
+    let row = v_flex()
         .id(SharedString::from(note.id.to_string()))
         .w_full()
         .gap_0p5()
         .px_3()
-        .py_1p5()
+        .map(|row| if compact { row.py_1() } else { row.py_1p5() })
         .rounded(cx.theme().radius)
         .cursor_pointer()
         .map(|row| {
@@ -224,43 +242,38 @@ fn row(
             } else {
                 row.hover(|row| row.bg(list_hover))
             }
-        })
-        .child(
+        });
+    let date = div()
+        .flex_none()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(dates::short(note.created_at, now));
+    let title = div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .font_medium()
+        .child(title);
+
+    if compact {
+        return row.child(
             h_flex()
                 .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .font_medium()
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(dates::short(note.created_at, now)),
-                ),
-        )
-        .child(
-            h_flex()
-                .h(px(18.))
-                .gap_1()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
+                .child(title)
                 .children(dots)
-                .child(div().flex_1().min_w_0().truncate().child(preview))
-                .when(note.images > 0, |row| {
-                    row.child(
-                        h_flex()
-                            .flex_none()
-                            .gap_0p5()
-                            .text_xs()
-                            .child(Icon::new(gpui_kit::assets::IconName::Image).xsmall())
-                            .child(note.images.to_string()),
-                    )
-                }),
-        )
+                .children(images)
+                .child(date),
+        );
+    }
+    row.child(h_flex().gap_2().child(title).child(date)).child(
+        h_flex()
+            // In rems, so the row grows with the text size.
+            .h(rems(1.125))
+            .gap_1()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .children(dots)
+            .child(div().flex_1().min_w_0().truncate().child(preview))
+            .children(images),
+    )
 }

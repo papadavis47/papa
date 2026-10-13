@@ -2,6 +2,8 @@
 
 mod app;
 mod assets;
+mod settings;
+mod settings_window;
 mod state;
 mod theme;
 mod ui;
@@ -15,6 +17,10 @@ fn main() {
         .with_assets(assets::PapaAssets)
         .run(|cx| {
             gpui_kit::init(cx);
+            // Settings first: the theme is built from them, and both are in
+            // place before the window draws its first frame.
+            let settings_problem = settings::init(cx);
+            theme::init(cx);
             app::init(cx);
 
             let options = WindowOptions {
@@ -29,11 +35,11 @@ fn main() {
 
             // `open_window` wraps our view in gpui-kit's `Root`, which hosts
             // dialogs, sheets and notifications above it.
-            gpui_kit::open_window(options, cx, |window, cx| {
+            let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
                 window.set_window_title("Papa");
-                theme::follow_system(window, cx);
-                cx.new(|cx| app::PapaApp::new(window, cx))
+                cx.new(|cx| app::PapaApp::new(settings_problem, window, cx))
             })
             .expect("failed to open the main window");
+            app::quit_with(window, cx);
         });
 }

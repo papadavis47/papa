@@ -60,8 +60,24 @@ pub enum Error {
         reason: std::io::Error,
     },
 
+    #[error("couldn't write {}: {reason}", path.display())]
+    WriteFile {
+        path: PathBuf,
+        reason: std::io::Error,
+    },
+
+    /// `serde_json`'s message says which line and column.
+    #[error("{} isn't valid: {reason}", path.display())]
+    InvalidSettings {
+        path: PathBuf,
+        reason: serde_json::Error,
+    },
+
     #[error("couldn't find the system data folder; set PAPA_VAULT to a vault file path")]
     NoDataDir,
+
+    #[error("couldn't find the system config folder; set PAPA_CONFIG_DIR to a folder path")]
+    NoConfigDir,
 
     #[error("the vault path must be valid UTF-8: {}", .0.display())]
     NonUtf8Path(PathBuf),

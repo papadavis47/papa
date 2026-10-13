@@ -1,4 +1,5 @@
-//! Where Papa keeps its files.
+//! Where Papa keeps its files: the vault in the OS data folder, settings
+//! and user themes in the OS config folder.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,28 @@ pub const VAULT_ENV: &str = "PAPA_VAULT";
 /// `~/Library/Application Support` on macOS).
 pub fn vault_path() -> Result<PathBuf> {
     choose_vault_path(std::env::var_os(VAULT_ENV), dirs::data_dir())
+}
+
+/// Overrides the config folder, which holds `settings.json` and `themes/`.
+/// Like [`VAULT_ENV`], it keeps development away from the real settings.
+pub const CONFIG_ENV: &str = "PAPA_CONFIG_DIR";
+
+/// The folder for settings and user themes: `$PAPA_CONFIG_DIR` if set,
+/// otherwise `papa` under the OS config folder (`~/.config` on Linux,
+/// `~/Library/Application Support` on macOS).
+pub fn config_dir() -> Result<PathBuf> {
+    choose_config_dir(std::env::var_os(CONFIG_ENV), dirs::config_dir())
+}
+
+/// The settings file, `settings.json` in [`config_dir`].
+pub fn settings_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("settings.json"))
+}
+
+/// The folder the father can drop theme files into, `themes` in
+/// [`config_dir`]. The app creates it and reloads its themes on every change.
+pub fn themes_dir() -> Result<PathBuf> {
+    Ok(config_dir()?.join("themes"))
 }
 
 /// `path` for display, with the home folder shortened to `~`.
@@ -39,6 +62,15 @@ fn choose_vault_path(env: Option<OsString>, data_dir: Option<PathBuf>) -> Result
         .ok_or(Error::NoDataDir)
 }
 
+fn choose_config_dir(env: Option<OsString>, config_dir: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = env.filter(|path| !path.is_empty()) {
+        return Ok(path.into());
+    }
+    config_dir
+        .map(|dir| dir.join("papa"))
+        .ok_or(Error::NoConfigDir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,6 +91,18 @@ mod tests {
     fn an_empty_variable_counts_as_unset() {
         let path = choose_vault_path(Some("".into()), Some("/data".into()));
         assert_eq!(path.unwrap(), PathBuf::from("/data/papa/vault.db"));
+    }
+
+    #[test]
+    fn the_config_folder_follows_the_same_rules() {
+        let dir = choose_config_dir(Some("/tmp/papa-config".into()), Some("/config".into()));
+        assert_eq!(dir.unwrap(), PathBuf::from("/tmp/papa-config"));
+        let dir = choose_config_dir(Some("".into()), Some("/config".into()));
+        assert_eq!(dir.unwrap(), PathBuf::from("/config/papa"));
+        assert!(matches!(
+            choose_config_dir(None, None),
+            Err(Error::NoConfigDir)
+        ));
     }
 
     #[test]

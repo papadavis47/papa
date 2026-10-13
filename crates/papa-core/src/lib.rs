@@ -4,15 +4,17 @@
 //! - [`Store`]: the local vault on the `turso` crate. It runs on its own
 //!   database thread; the UI talks to it through this cheap, cloneable handle.
 //! - [`images`]: turns attached photos into what the vault stores.
-//! - [`paths`]: where the vault lives on disk.
+//! - [`settings`]: the father's preferences and their file, `settings.json`.
+//! - [`paths`]: where the vault and the settings live on disk.
 //!
 //! Planned (see `PLAN.md`): crypto for shared notes,
-//! the share projection, the relay client and the settings file.
+//! the share projection and the relay client.
 
 mod error;
 pub mod images;
 pub mod model;
 pub mod paths;
+pub mod settings;
 mod store;
 
 pub use error::{Error, Result};

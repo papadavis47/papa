@@ -21,18 +21,19 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task,
-    UniformListScrollHandle, Window, div, px,
+    AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
+    IntoElement, KeyBinding, ParentElement as _, Render, SharedString, Styled as _, Subscription,
+    Task, UniformListScrollHandle, Window, div, px,
 };
 use papa_core::{Child, Label, NoteFilter, NoteSummary, Store, paths};
 
+use crate::settings::AppSettings;
 use crate::state::Selection;
-use crate::theme;
 use crate::ui::lightbox::{CloseLightbox, LIGHTBOX_CONTEXT, NextImage, PreviousImage};
 use crate::ui::{
     AppSidebar, AppTitleBar, NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteView, sentence,
 };
+use crate::{settings_window, theme};
 
 gpui_kit::actions!(
     papa,
@@ -59,6 +60,8 @@ gpui_kit::actions!(
         FocusSearch,
         /// Choose images to add to the open note.
         AddImages,
+        /// Open the Settings window.
+        OpenSettings,
     ]
 );
 
@@ -86,6 +89,9 @@ pub fn init(cx: &mut App) {
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-shift-l", ToggleTheme, None),
+        // No context: works in the Settings window too, where it brings
+        // that window forward.
+        KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-b", ToggleSidebar, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-n", NewNote, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-e", TogglePreview, Some(APP_CONTEXT)),
@@ -102,13 +108,19 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("up", SelectPreviousNote, Some(&in_search)),
     ]);
 
-    // App-level handlers: quitting and the theme are global, not owned by a view.
+    // App-level handlers: quitting, the theme and the Settings window are
+    // global, not owned by a view.
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &ToggleTheme, cx| theme::toggle(cx));
+    cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
+}
 
-    // Closing the last window ends the app.
-    cx.on_window_closed(|cx, _| {
-        if cx.windows().is_empty() {
+/// Ends the app when `main_window` closes, even if the Settings window is
+/// still open.
+pub fn quit_with(main_window: AnyWindowHandle, cx: &mut App) {
+    let main_window = main_window.window_id();
+    cx.on_window_closed(move |cx, closed| {
+        if closed == main_window || cx.windows().is_empty() {
             cx.quit();
         }
     })
@@ -185,7 +197,13 @@ pub struct PapaApp {
 }
 
 impl PapaApp {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `settings_problem` is why the settings file couldn't be read, if it
+    /// couldn't; it's shown once the window is up.
+    pub fn new(
+        settings_problem: Option<anyhow::Error>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let sidebar_focus = cx.focus_handle();
         // Start in the sidebar so the arrow keys work straight away.
         sidebar_focus.focus(window, cx);
@@ -212,7 +230,29 @@ impl PapaApp {
             cx.on_focus_lost(window, |this, window, cx| {
                 this.focus_handle.focus(window, cx);
             }),
+            // "Match system" follows the OS switching between light and dark
+            // while the app runs.
+            cx.observe_window_appearance(window, |_, window, cx| {
+                theme::set_system_appearance(window, cx)
+            }),
+            // Density, fonts and line height are read while rendering, so a
+            // change only needs a redraw. It redraws the whole window, the
+            // editor included.
+            cx.observe_global::<AppSettings>(|_, cx| cx.notify()),
         ];
+        theme::set_system_appearance(window, cx);
+        if let Some(err) = settings_problem {
+            // Deferred: the window's `Root`, which shows notifications, is
+            // built around this view after `new` returns.
+            cx.defer_in(window, move |_, window, cx| {
+                window.push_notification(
+                    Notification::warning(sentence(format!("{err:#}")))
+                        .title("Papa couldn't read your settings")
+                        .autohide(false),
+                    cx,
+                );
+            });
+        }
 
         // The window shows up immediately; this task waits for the database
         // thread without blocking the UI, then fills in the state. `this` is a
@@ -393,6 +433,7 @@ impl Render for PapaApp {
                                             self.search.clone(),
                                             self.note_scroll.clone(),
                                             self.empty_message(cx),
+                                            AppSettings::get(cx).appearance.density,
                                             self.is_open(),
                                             cx.listener(Self::on_note_list_event),
                                         )),
@@ -404,11 +445,7 @@ impl Render for PapaApp {
             .child(
                 StatusBar::new()
                     .left(status)
-                    .right(if cx.theme().mode.is_dark() {
-                        "Dark"
-                    } else {
-                        "Light"
-                    }),
+                    .right(cx.theme().theme_name().clone()),
             )
             .children(lightbox)
     }

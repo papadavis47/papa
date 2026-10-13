@@ -16,19 +16,20 @@ use gpui_kit::component::{
     text::TextView,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
     ExternalPaths, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div, rgb,
+    SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div, relative, rgb,
 };
 use jiff::tz::TimeZone;
+use papa_core::settings::{Density, NoteMode};
 use papa_core::{Child, ChildId, Label, LabelId, Note, NoteId, Store};
 
 use super::gallery::{Gallery, GalleryEvent};
 use super::{NoteView, dates, dialogs, sentence};
-
-/// How long typing must pause before the note is saved.
-pub const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
+use crate::settings::AppSettings;
+use crate::theme;
 
 /// What the editor tells its parent. `PapaApp` subscribes to these to keep
 /// the note list in step.
@@ -151,9 +152,14 @@ impl NoteEditor {
         });
         self.preview = note.body.clone().into();
         self.cursor_to_end = true;
-        if note.title.is_empty() && note.body.is_empty() {
-            self.mode = Mode::Edit;
-        }
+        self.mode = if note.title.is_empty() && note.body.is_empty() {
+            Mode::Edit
+        } else {
+            match AppSettings::get(cx).editor.open_notes_in {
+                NoteMode::Preview => Mode::Preview,
+                NoteMode::Edit => Mode::Edit,
+            }
+        };
         self.show_images(Some(note.id), window, cx);
         self.note = Some(note);
         cx.notify();
@@ -260,14 +266,16 @@ impl NoteEditor {
         }
     }
 
-    /// The text changed: save once typing pauses for [`AUTOSAVE_DELAY`].
+    /// The text changed: save once typing pauses for the autosave delay
+    /// in the settings.
     fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.note.is_none() {
             return;
         }
         self.dirty = true;
+        let delay = Duration::from_millis(AppSettings::get(cx).editor.autosave_delay_ms);
         self.autosave = Some(cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(AUTOSAVE_DELAY).await;
+            cx.background_executor().timer(delay).await;
             this.update_in(cx, |this, window, cx| this.save(window, cx))
                 .ok();
         }));
@@ -547,26 +555,40 @@ impl NoteEditor {
             )
     }
 
+    /// The Markdown in the writing font, or rendered in the reading font.
     fn render_body(&self, note: &Note, cx: &mut Context<Self>) -> AnyElement {
+        let line_height = relative(AppSettings::get(cx).appearance.line_height);
         match self.mode {
+            // On the field itself: it sets its own line height, which an
+            // inherited one can't override.
             Mode::Edit => Textarea::new(&self.body)
                 .appearance(false)
                 .h_full()
+                .font_family(theme::writing_font(cx))
+                .line_height(line_height)
                 .on_paste(Self::paste_images(cx.entity().downgrade()))
                 .into_any_element(),
             Mode::Preview if self.preview.trim().is_empty() => div()
                 .text_color(cx.theme().muted_foreground)
                 .child("Nothing written yet. Switch to Edit to write.")
                 .into_any_element(),
-            // The id keys the preview's cached layout and scroll position:
-            // one per note.
-            Mode::Preview => TextView::markdown(
-                SharedString::from(format!("preview-{}", note.id)),
-                self.preview.clone(),
-            )
-            .scrollable(true)
-            .size_full()
-            .into_any_element(),
+            // Text style is inherited, the way CSS inherits it, so the
+            // rendered Markdown takes the font and line height from here.
+            Mode::Preview => div()
+                .size_full()
+                .font_family(theme::reading_font(cx))
+                .line_height(line_height)
+                .child(
+                    // The id keys the preview's cached layout and scroll
+                    // position: one per note.
+                    TextView::markdown(
+                        SharedString::from(format!("preview-{}", note.id)),
+                        self.preview.clone(),
+                    )
+                    .scrollable(true)
+                    .size_full(),
+                )
+                .into_any_element(),
         }
     }
 }
@@ -665,13 +687,18 @@ impl Render for NoteEditor {
             return root.child(NoteView);
         };
         let drop_target = cx.theme().drop_target;
+        let compact = AppSettings::get(cx).appearance.density == Density::Compact;
 
         root.child(
             v_flex()
                 .gap_2()
-                .px_6()
-                .pt_4()
-                .pb_3()
+                .map(|header| {
+                    if compact {
+                        header.px_4().pt_2().pb_2()
+                    } else {
+                        header.px_6().pt_4().pb_3()
+                    }
+                })
                 .border_b_1()
                 .border_color(cx.theme().border)
                 // The title gets a line of its own, so a narrow pane can't
@@ -690,8 +717,13 @@ impl Render for NoteEditor {
             div()
                 .flex_1()
                 .min_h_0()
-                .px_6()
-                .py_4()
+                .map(|body| {
+                    if compact {
+                        body.px_4().py_2()
+                    } else {
+                        body.px_6().py_4()
+                    }
+                })
                 .child(self.render_body(note, cx)),
         )
         .child(self.gallery.clone())

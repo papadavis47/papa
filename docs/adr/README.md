@@ -13,5 +13,6 @@ Short records of significant decisions: the context, what we chose, and what it 
 | [0007](0007-database-actor-thread.md) | The vault runs as an actor on its own thread | Accepted |
 | [0008](0008-note-search-without-turso-fts.md) | Search notes in Rust; Turso's full-text search waits | Accepted |
 | [0009](0009-images-stored-in-the-vault.md) | Images live in the vault, in three versions, one row each | Accepted |
+| [0010](0010-settings-file-and-themes.md) | Settings in a JSON file of their own, held as a GPUI global | Accepted |
 
 Template: copy [0000-template.md](0000-template.md).

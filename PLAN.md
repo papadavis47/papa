@@ -2,7 +2,7 @@
 
 A private, local-first journal for fathers. A father keeps a profile for each of his children and writes notes about them. He can choose to share some notes with a child, who opens them in the same app. Father and child can message each other.
 
-> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–5 are done; Phase 6 (command palette and polish) is in review.
+> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–6 are done; Phase 7 (Vim mode) is in review.
 
 ---
 
@@ -291,7 +291,7 @@ Each phase ends with something runnable. Each one has a short "what you'll learn
 | 3 ✅ | **Notes** | Note list (virtualized), Markdown editor + preview, autosave, assign to children, labels, filtering, search | `EditorState`, subscriptions/events, debouncing with tasks, `TextView` |
 | 4 ✅ | **Images** | Attach with drag and drop/paste/picker, thumbnails in the background, gallery and lightbox | `image` crate, background tasks, `img()` / `ImageSource`, file dialogs |
 | 5 ✅ | **Settings & themes** | Settings panel, settings.json, font/size/density, bundled + user themes with hot reload | serde, globals (`cx.set_global`), `ThemeRegistry`, observing settings changes |
-| 6 | **Command palette & polish** | ⌘K palette, empty states, animations, keyboard navigation everywhere | `Command`, focus handles, motion |
+| 6 ✅ | **Command palette & polish** | ⌘K palette, empty states, animations, keyboard navigation everywhere | `Command`, focus handles, motion |
 | 7 | **Vim mode** | Normal/Insert/Visual, the motions and edits listed above, status-bar indicator, list navigation | state machines with enums, key event handling, a test-driven parser |
 | 8 | **PDF export** | `papa-pdf`: Markdown → Typst → PDF, with images; export one note, a selection or a child's whole book | the `typst` `World` trait, AST walking, crate isolation |
 | 9 | **Vault lock & backup** | Optional at-rest encryption, password unlock screen, auto-lock, export/import backup | Argon2id, zeroize, Turso encryption |

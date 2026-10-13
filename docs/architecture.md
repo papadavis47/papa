@@ -13,7 +13,7 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 - **papa** is the only crate that depends on `gpui-kit`. It holds the views, actions, keybindings, themes and Vim layer.
 - **papa-core** has no UI code. It owns the models, the `Store` (local Turso database and migrations), crypto, the share projection and the settings file. It is unit-tested without a window.
 - **papa-proto** holds the serde types for the relay API. The app and the server compile against the same definitions.
-- **papa-pdf** turns Markdown into PDF. It is kept separate because the PDF toolchain is heavy to compile.
+- **papa-pdf** turns notes into a PDF with Typst (see [PDF export](#pdf-export)). It takes plain values, not vault types, so the child's app can use it too. It is kept separate because Typst is heavy to compile: papa-core and the relay don't build it.
 - **papa-relay** is a small HTTP service: father accounts, invite codes, creating one cloud database per shared child, and issuing short-lived, database-scoped tokens.
 
 ## Desktop app
@@ -36,7 +36,8 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 │                             VimLayer while the setting is on       │
 │                └─ Gallery   (Entity) thumbnail strip; adds images  │
 │                             from the picker, a drop or a paste     │
-│ StatusBar  ── Vim mode (when on) · vault path · theme name         │
+│ StatusBar  ── Vim mode (when on) · vault path · "Exporting…" ·     │
+│               theme name                                           │
 │ Lightbox   ── (Entity, owned by Gallery) one image over the whole  │
 │               window; key context "Lightbox"                       │
 │ CommandPalette ── (Entity) ⌘K over everything; key context         │
@@ -98,6 +99,7 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
   - **Drawing:** `img()` takes an `Arc<gpui::Image>` holding encoded bytes. GPUI decodes it on a background thread the first time it's drawn and caches the pixels, keyed by a hash of the bytes. It keeps them, and their GPU texture, until told otherwise, so the gallery and lightbox call `release` for images they stop showing. Without it, browsing photos grows the app by about 16 MB per full-size image viewed.
   - **The lightbox** is the last child of `PapaApp`'s root, so it covers the panes; gpui-kit's dialogs and notifications still draw above it, which the "Delete this image?" confirmation needs. The thumbnail is drawn under the full-size image, because GPUI waits 200 ms before showing an `img`'s loading placeholder. The full-size image has an element id: GPUI keeps a GIF's current frame in element state, so without one a GIF wouldn't animate.
   - **The strip** scrolls sideways with GPUI's `overflow_x_scroll`, which turns a mouse wheel's vertical turns into sideways scrolling, plus gpui-kit's scrollbar sharing its `ScrollHandle`.
+- **PDF export** (`app/export.rs`, with the decisions in plain Rust in `export.rs`): ⌘P exports the open note, ⌘⇧P the notes in the list. When the list shows a child and isn't searched, that's the child's whole book; otherwise it's the notes a label or search picked out. A book reads oldest first, after a title page and contents. `PapaApp` asks where to save (`cx.prompt_for_new_path`), reads the notes and their display-size photos from the store, then lays out the PDF and writes it on the background pool. Linux desktops without the file-chooser portal have no save dialog; the PDF then goes to the Documents folder under a name that's free. One export runs at a time, shown in the status bar; a notification offers to open the result.
 - **Icons:** gpui-kit's default asset source embeds only the components' icons. `assets.rs` adds the extra Lucide icons the app uses with `icon_assets!` and combines both into one `AssetSource`.
 - **Window chrome:** the app draws its own title bar. On Linux it asks for client-side decorations so the compositor doesn't add a second one.
 - **Settings and themes** (see [ADR 0010](adr/0010-settings-file-and-themes.md)):
@@ -118,6 +120,8 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 | ⌘E | Switch the note between Edit and Preview |
 | ⌘F | Jump to search; Esc clears it |
 | ⌘⇧O | Add images to the open note (⌘⇧I is GPUI's inspector in debug builds) |
+| ⌘P | Export the open note to PDF |
+| ⌘⇧P | Export the notes in the list to PDF (a child's book when the list shows that child) |
 | ⌘K | Command palette: run a command, go to a child or label, open a note, assign the open note |
 | ⌘1 / ⌘2 / ⌘3 | Focus the sidebar / note list / note |
 | → or Enter (sidebar) | Focus the note list |
@@ -174,6 +178,24 @@ The vault is one Turso (SQLite-format) file: `vault.db` in the OS data directory
 | `image` | `id`, `note_id`, `mime`, `width`, `height`, `sha256`, `created_at`; unique per note and hash | v3 |
 | `image_data` | `image_id`, `kind` (`thumb` / `display` / `original`), `mime`, `bytes` | v3 |
 
+## PDF export
+
+`papa-pdf` turns a `Document` (notes, maybe a cover, a paper size) into PDF bytes, all in memory. See [ADR 0006](adr/0006-typst-for-pdf-export.md).
+
+```diagram
+ Document ──▶ markdown.rs: each body's Markdown tree ──▶ Typst markup
+          └─▶ markup.rs:   main.typ = #import "/book.typ" + one #note(…) per note
+                                │
+ BookWorld (world.rs) serves    ▼
+   /main.typ, /book.typ,   typst::compile ──▶ PagedDocument ──▶ typst_pdf::pdf ──▶ bytes
+   /photos/<n>.<ext>, fonts
+```
+
+- **Markdown is parsed with the `markdown` crate**, the parser the app's preview uses, so both read a note the same way (GitHub's flavour). The tree is walked depth first. Structure becomes Typst function calls (`#strong[…]`, `#list(…)`, `#table(…)`), never Typst's shorthand, and every ASCII punctuation character in the text is escaped, so nothing typed in a note can become markup. A note's headings move one level down, under its title.
+- **The layout lives in Typst**, in `book.typ`: page, fonts, title page, contents, a note's heading and date line, photos (full width, or a fixed height if tall; a two-column grid for several). Rust only says what goes where.
+- **`BookWorld` is Typst's view of the world.** Typst reads nothing itself; it asks the `World` trait for sources, files, fonts and the date. Ours serves the two sources and the photos from memory, and the fonts Typst bundles (Libertinus Serif, DejaVu Sans Mono) plus the system's, which fill in emoji and other scripts. The system scan happens once, on the first export.
+- **Long-running-app hygiene:** photos get positional paths (`/photos/0.jpg`), because Typst interns every path for the life of the process and holds at most 65,535; and Typst's memoization cache is evicted after each export.
+
 ## Data flow (planned)
 
 1. The father's vault is a local Turso database. It is the source of truth and works offline.
@@ -184,7 +206,7 @@ The vault is one Turso (SQLite-format) file: `vault.db` in the OS data directory
 ## Threading
 
 - **UI thread:** GPUI's executors. Long work is awaited in GPUI tasks, never run inline.
-- **GPUI's background thread pool:** CPU-heavy work handed off with `cx.background_spawn`: preparing images, and GPUI's own image decoding. Saving `settings.json` runs there too.
+- **GPUI's background thread pool:** CPU-heavy work handed off with `cx.background_spawn`: preparing images, laying out and writing PDFs, and GPUI's own image decoding. Saving `settings.json` runs there too.
 - **`papa-store` thread:** owns the database connection and runs a single-threaded tokio runtime (tokio is also what `turso`'s sync needs later). It exits when the last `Store` handle is dropped.
 
 ## Security model (planned)

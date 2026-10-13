@@ -5,7 +5,7 @@
 
 A private, local-first journal for fathers. Keep a profile for each of your children, write notes and save photos about them, and, if you choose, share some of those notes with a child, who can read them in the same app, export them to PDF and message you back.
 
-> **Status:** early development, built in public. Phases 0–6 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette) are done; Phase 7 (Vim mode) is in review. See [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** early development, built in public. Phases 0–7 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode) are done; Phase 8 (PDF export) is in review. See [PLAN.md](PLAN.md) for the roadmap.
 
 ## Planned features
 
@@ -13,7 +13,7 @@ A private, local-first journal for fathers. Keep a profile for each of your chil
 - Local-first storage with [Turso](https://turso.tech), fully usable offline
 - Optional end-to-end encrypted sharing: each child sees **only** the notes shared with them
 - Messages between father and child
-- PDF export
+- PDF export: one note, the notes a label or search picks out, or a child's whole book with a title page and contents, typeset with [Typst](https://typst.app)
 - Themes, a settings panel (fonts, text size, density) and an optional Vim mode (Normal, Insert and Visual modes, counts and operators, `:w`)
 - Keyboard first: a ⌘K command palette reaches every command, child, label and note
 - Linux and macOS first, Windows later
@@ -23,6 +23,7 @@ A private, local-first journal for fathers. Keep a profile for each of your chil
 - **Rust** (edition 2024)
 - **[GPUI](https://www.gpui.rs)** via **[gpui-kit](https://gpui-kit.com)**, a GPU-accelerated UI framework and component library
 - **[Turso](https://turso.tech)**, the Rust rewrite of SQLite, for local storage and sync
+- **[Typst](https://typst.app)**, run in-process as a library, for PDF export
 
 ## Repository layout
 

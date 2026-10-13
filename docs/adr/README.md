@@ -12,5 +12,6 @@ Short records of significant decisions: the context, what we chose, and what it 
 | [0006](0006-typst-for-pdf-export.md) | Typst for PDF export | Proposed |
 | [0007](0007-database-actor-thread.md) | The vault runs as an actor on its own thread | Accepted |
 | [0008](0008-note-search-without-turso-fts.md) | Search notes in Rust; Turso's full-text search waits | Accepted |
+| [0009](0009-images-stored-in-the-vault.md) | Images live in the vault, in three versions, one row each | Accepted |
 
 Template: copy [0000-template.md](0000-template.md).

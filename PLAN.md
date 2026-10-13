@@ -167,13 +167,14 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
 
 | Table | Key columns |
 |---|---|
-| `profile` | id, display_name, email, avatar_blob_id, created_at |
-| `child` | id, name, birth_date, color, avatar_blob_id, sort_order, archived_at |
+| `profile` | id, display_name, email, avatar_image_id, created_at |
+| `child` | id, name, birth_date, color, avatar_image_id, sort_order, archived_at |
 | `label` | id, name, color, sort_order |
 | `note` | id, title, body_md, pinned, created_at, updated_at, deleted_at |
 | `note_child` | note_id, child_id — *many-to-many: one note can be about several children* |
 | `note_label` | note_id, label_id |
-| `blob` | id, note_id, mime, bytes, width, height, sha256, thumb (small BLOB) |
+| `image` | id, note_id, mime, width, height, sha256, created_at |
+| `image_data` | image_id, kind (thumb / display / original), mime, bytes — *one row per version; see [ADR 0009](docs/adr/0009-images-stored-in-the-vault.md)* |
 | `share` | child_id, remote_db, wrapped_content_key, key_salt, status, last_synced_at |
 | `note_share` | note_id, child_id, shared_at, remote_version — *which notes each child can see* |
 | `message` | id, child_id, direction, body, created_at, read_at, remote_id |

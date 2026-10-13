@@ -2,7 +2,7 @@
 
 A private, local-first journal for fathers. A father keeps a profile for each of his children and writes notes about them. He can choose to share some notes with a child, who opens them in the same app. Father and child can message each other.
 
-> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–3 are done; Phase 4 (images) is in review.
+> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–4 are done; Phase 5 (settings and themes) is in review.
 
 ---
 
@@ -289,7 +289,7 @@ Each phase ends with something runnable. Each one has a short "what you'll learn
 | 1 ✅ | **App shell** | Window, `Root`, custom `TitleBar`, Sidebar + 3 resizable panes with placeholder data, Light/Dark toggle, first actions + keybindings | `Entity`, `Render` vs `RenderOnce`, `Context`, actions, key contexts, the gpui-kit layout helpers (`h_flex`/`v_flex`) |
 | 2 ✅ | **Local storage** | `papa-core::Store` on `turso`, migrations, the database actor thread, CRUD for children and labels wired into the UI | async Rust, tokio vs GPUI executors, channels, `thiserror`/`anyhow`, testing with a temporary database |
 | 3 ✅ | **Notes** | Note list (virtualized), Markdown editor + preview, autosave, assign to children, labels, filtering, search | `EditorState`, subscriptions/events, debouncing with tasks, `TextView` |
-| 4 | **Images** | Attach with drag and drop/paste/picker, thumbnails in the background, gallery and lightbox | `image` crate, background tasks, `img()` / `ImageSource`, file dialogs |
+| 4 ✅ | **Images** | Attach with drag and drop/paste/picker, thumbnails in the background, gallery and lightbox | `image` crate, background tasks, `img()` / `ImageSource`, file dialogs |
 | 5 | **Settings & themes** | Settings panel, settings.json, font/size/density, bundled + user themes with hot reload | serde, globals (`cx.set_global`), `ThemeRegistry`, observing settings changes |
 | 6 | **Command palette & polish** | ⌘K palette, empty states, animations, keyboard navigation everywhere | `Command`, focus handles, motion |
 | 7 | **Vim mode** | Normal/Insert/Visual, the motions and edits listed above, status-bar indicator, list navigation | state machines with enums, key event handling, a test-driven parser |

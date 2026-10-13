@@ -14,17 +14,18 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, WindowExt as _, h_resizable,
+    ActiveTheme as _, Icon, IconName, StyledExt as _, WindowExt as _, h_flex, h_resizable,
     input::{InputEvent, InputState},
     notification::Notification,
     resizable_panel,
     status_bar::StatusBar,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyBinding, ParentElement as _, Render, SharedString, Styled as _, Subscription,
-    Task, UniformListScrollHandle, Window, div, px,
+    IntoElement, KeyBinding, KeyContext, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Task, UniformListScrollHandle, Window, div, px,
 };
 use papa_core::{Child, Label, NoteFilter, NoteSummary, Store, paths};
 
@@ -35,7 +36,7 @@ use crate::ui::{
     AppSidebar, AppTitleBar, COMMAND_PALETTE_CONTEXT, CommandPalette, EmptyNotes,
     NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteListEvent, NoteView, sentence,
 };
-use crate::{settings_window, theme};
+use crate::{settings_window, theme, vim};
 
 gpui_kit::actions!(
     papa,
@@ -88,6 +89,9 @@ pub const SIDEBAR_CONTEXT: &str = "Sidebar";
 pub const NOTE_LIST_CONTEXT: &str = "NoteList";
 /// Key context on the note editor, title, text and preview included.
 pub const NOTE_EDITOR_CONTEXT: &str = "NoteEditor";
+/// Added to the sidebar's and the note list's key contexts while Vim mode
+/// is on, so Vim's keys move through them.
+pub const VIM_CONTEXT: &str = "vim";
 
 /// Registers keybindings and app-wide action handlers. Call once at startup,
 /// after `gpui_kit::init`.
@@ -101,6 +105,11 @@ pub fn init(cx: &mut App) {
     // search box has nothing to search, so there ⌘F does what it does
     // elsewhere, and the palette shows ⌘F next to "Search notes".
     let in_palette = format!("{COMMAND_PALETTE_CONTEXT} > Input");
+    // With Vim mode on, the lists take Vim's keys: j and k move, h and l
+    // move between panes, / searches. `!Input` keeps the search box, which
+    // is inside the list's pane, typing them as letters.
+    let vim_sidebar = format!("{SIDEBAR_CONTEXT} && {VIM_CONTEXT} && !Input");
+    let vim_list = format!("{NOTE_LIST_CONTEXT} && {VIM_CONTEXT} && !Input");
     cx.bind_keys([
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-q", Quit, None),
@@ -140,6 +149,14 @@ pub fn init(cx: &mut App) {
         // it through when it has nothing to do with it. GPUI then tries the
         // next binding for the key: this one.
         KeyBinding::new("escape", FocusNoteList, Some(NOTE_EDITOR_CONTEXT)),
+        KeyBinding::new("j", SelectNextFilter, Some(&vim_sidebar)),
+        KeyBinding::new("k", SelectPreviousFilter, Some(&vim_sidebar)),
+        KeyBinding::new("l", FocusNoteList, Some(&vim_sidebar)),
+        KeyBinding::new("j", SelectNextNote, Some(&vim_list)),
+        KeyBinding::new("k", SelectPreviousNote, Some(&vim_list)),
+        KeyBinding::new("h", FocusSidebar, Some(&vim_list)),
+        KeyBinding::new("l", FocusEditor, Some(&vim_list)),
+        KeyBinding::new("/", FocusSearch, Some(&vim_list)),
     ]);
 
     // App-level handlers: quitting, the theme and the Settings window are
@@ -430,6 +447,11 @@ impl Render for PapaApp {
             Vault::Open { path, .. } => paths::display(path).into(),
             Vault::Failed => "Vault unavailable".into(),
         };
+        let vim = AppSettings::get(cx).editor.vim_mode;
+        let vim_status = self
+            .editor
+            .as_ref()
+            .and_then(|editor| editor.read(cx).vim_status(window, cx));
         let editor = match &self.editor {
             Some(editor) => editor.clone().into_any_element(),
             None => NoteView::new(false).into_any_element(),
@@ -469,7 +491,7 @@ impl Render for PapaApp {
                                 .child(
                                     div()
                                         .size_full()
-                                        .key_context(SIDEBAR_CONTEXT)
+                                        .key_context(pane_context(SIDEBAR_CONTEXT, vim))
                                         .track_focus(&self.sidebar_focus)
                                         .on_action(cx.listener(Self::select_next_filter))
                                         .on_action(cx.listener(Self::select_previous_filter))
@@ -493,7 +515,7 @@ impl Render for PapaApp {
                                 .child(
                                     div()
                                         .size_full()
-                                        .key_context(NOTE_LIST_CONTEXT)
+                                        .key_context(pane_context(NOTE_LIST_CONTEXT, vim))
                                         .track_focus(&self.note_list_focus)
                                         .on_action(cx.listener(Self::select_next_note))
                                         .on_action(cx.listener(Self::select_previous_note))
@@ -519,12 +541,38 @@ impl Render for PapaApp {
             )
             .child(
                 StatusBar::new()
+                    .when_some(vim_status, |bar, status| {
+                        bar.left(vim_indicator(status, cx))
+                    })
                     .left(status)
                     .right(cx.theme().theme_name().clone()),
             )
             .children(lightbox)
             .child(self.palette.clone())
     }
+}
+
+/// A pane's key context, with [`VIM_CONTEXT`] while Vim mode is on.
+fn pane_context(name: &'static str, vim: bool) -> KeyContext {
+    let mut context = KeyContext::default();
+    context.add(name);
+    if vim {
+        context.add(VIM_CONTEXT);
+    }
+    context
+}
+
+/// Vim's mode, then the keys typed so far or a message: `NORMAL  2d`.
+fn vim_indicator(status: vim::Status, cx: &App) -> impl IntoElement {
+    h_flex()
+        .gap_2()
+        .children(status.mode.map(|mode| {
+            div()
+                .font_semibold()
+                .text_color(cx.theme().foreground)
+                .child(mode)
+        }))
+        .child(status.detail)
 }
 
 impl PapaApp {

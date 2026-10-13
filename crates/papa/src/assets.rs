@@ -16,6 +16,7 @@ gpui_kit::assets::icon_assets!(
         Hash,
         Image,
         ImagePlus,
+        Keyboard,
         List,
         LogOut,
         NotebookPen,

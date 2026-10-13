@@ -19,9 +19,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem,
-    Context, Entity, EventEmitter, ExternalPaths, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task,
-    WeakEntity, Window, div, ease_out_quint, relative, rgb,
+    ContentMask, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, Keystroke, ParentElement as _, Render, SharedString,
+    Styled as _, Subscription, Task, WeakEntity, Window, canvas, div, ease_out_quint, fill,
+    relative, rgb,
 };
 use jiff::tz::TimeZone;
 use papa_core::settings::{Density, NoteMode};
@@ -29,9 +30,10 @@ use papa_core::{Child, ChildId, Label, LabelId, Note, NoteId, Store};
 
 use super::gallery::{Gallery, GalleryEvent};
 use super::{NoteView, dates, dialogs, sentence};
-use crate::app::NOTE_EDITOR_CONTEXT;
+use crate::app::{FocusNoteList, NOTE_EDITOR_CONTEXT};
 use crate::settings::AppSettings;
 use crate::theme;
+use crate::vim::{self, Effect, VimLayer};
 
 /// What the editor tells its parent. `PapaApp` subscribes to these to keep
 /// the note list in step.
@@ -85,6 +87,9 @@ pub struct NoteEditor {
     autosave: Option<Task<()>>,
     /// Focused in preview, so keys don't go to the hidden text field.
     focus_handle: FocusHandle,
+    /// Vim mode, while the setting is on. `None` when it's off: no hook on
+    /// the keyboard, nothing to pay for.
+    vim: Option<VimLayer>,
     /// Dropping a `Subscription` unsubscribes, so they live as long as we do.
     _subscriptions: Vec<Subscription>,
 }
@@ -108,7 +113,13 @@ impl NoteEditor {
             }),
             // GPUI awaits the returned future (briefly) before exiting.
             cx.on_app_quit(Self::save_before_quit),
+            // Vim mode can be switched on and off while the app runs.
+            cx.observe_global_in::<AppSettings>(window, Self::sync_vim),
         ];
+        let vim = AppSettings::get(cx)
+            .editor
+            .vim_mode
+            .then(|| VimLayer::attach(cx, Self::vim_keystroke));
         Self {
             store,
             note: None,
@@ -123,6 +134,7 @@ impl NoteEditor {
             cursor_to_end: false,
             autosave: None,
             focus_handle: cx.focus_handle(),
+            vim,
             _subscriptions: subscriptions,
         }
     }
@@ -163,6 +175,9 @@ impl NoteEditor {
         });
         self.preview = note.body.clone().into();
         self.cursor_to_end = true;
+        if let Some(layer) = &mut self.vim {
+            layer.vim.reset();
+        }
         self.mode = if note.title.is_empty() && note.body.is_empty() {
             Mode::Edit
         } else {
@@ -249,6 +264,11 @@ impl NoteEditor {
                 input.focus(window, cx);
             }
         });
+        // Vim starts every visit to the text in Normal mode.
+        if let Some(layer) = &mut self.vim {
+            layer.vim.reset();
+            layer.show_cursor(&self.body, cx);
+        }
         cx.notify();
     }
 
@@ -285,6 +305,11 @@ impl NoteEditor {
     ) {
         if let InputEvent::Change = event {
             self.changed(window, cx);
+            // Undo restores a selection, and a paste leaves the caret after
+            // the text: Normal mode puts the cursor back on a character.
+            if let Some(layer) = &self.vim {
+                layer.show_cursor(&self.body, cx);
+            }
         }
     }
 
@@ -373,6 +398,71 @@ impl NoteEditor {
                 let _ = save.await;
             }
         }
+    }
+
+    // --- Vim ---
+
+    /// Attaches Vim when the setting is turned on, and detaches it when it's
+    /// turned off.
+    fn sync_vim(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = AppSettings::get(cx).editor.vim_mode;
+        if enabled == self.vim.is_some() {
+            return;
+        }
+        if enabled {
+            let layer = VimLayer::attach(cx, Self::vim_keystroke);
+            if self.body_focused(window, cx) {
+                layer.show_cursor(&self.body, cx);
+            }
+            self.vim = Some(layer);
+        } else {
+            self.vim = None;
+        }
+        cx.notify();
+    }
+
+    fn body_focused(&self, window: &Window, cx: &App) -> bool {
+        self.mode == Mode::Edit
+            && self.note.is_some()
+            && self.body.focus_handle(cx).is_focused(window)
+    }
+
+    /// Every keystroke in the app passes through here first while Vim is
+    /// on. Only those for the note's text are Vim's; the title, the search
+    /// box and the rest of the app get theirs as usual.
+    fn vim_keystroke(
+        &mut self,
+        keystroke: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.body_focused(window, cx) {
+            return false;
+        }
+        let Some(layer) = &mut self.vim else {
+            return false;
+        };
+        let (handled, requests) = layer.keystroke(keystroke, &self.body, window, cx);
+        for request in requests {
+            match request {
+                Effect::Save => self.flush(window, cx),
+                // Like Esc without Vim: back to the note list. Dispatched,
+                // so `PapaApp` moves focus the same way the key does.
+                Effect::Leave => window.dispatch_action(Box::new(FocusNoteList), cx),
+                _ => {}
+            }
+        }
+        if handled {
+            // The status bar shows the mode and the keys typed so far.
+            cx.notify();
+        }
+        handled
+    }
+
+    /// What the status bar shows for Vim, while the note's text has focus.
+    pub fn vim_status(&self, window: &Window, cx: &App) -> Option<vim::Status> {
+        let layer = self.vim.as_ref()?;
+        self.body_focused(window, cx).then(|| layer.vim.status())
     }
 
     // --- Images ---
@@ -588,12 +678,19 @@ impl NoteEditor {
         match self.mode {
             // On the field itself: it sets its own line height, which an
             // inherited one can't override.
-            Mode::Edit => Textarea::new(&self.body)
-                .appearance(false)
-                .h_full()
-                .font_family(theme::writing_font(cx))
-                .line_height(line_height)
-                .on_paste(Self::paste_images(cx.entity().downgrade()))
+            Mode::Edit => div()
+                .relative()
+                .size_full()
+                .child(
+                    Textarea::new(&self.body)
+                        .appearance(false)
+                        .h_full()
+                        .font_family(theme::writing_font(cx))
+                        .line_height(line_height)
+                        .on_paste(Self::paste_images(cx.entity().downgrade())),
+                )
+                // After the field, so it's painted over the text.
+                .children(self.vim.is_some().then(|| vim_block(cx)))
                 .into_any_element(),
             Mode::Preview if self.preview.trim().is_empty() => div()
                 .text_color(cx.theme().muted_foreground)
@@ -618,6 +715,41 @@ impl NoteEditor {
                 .into_any_element(),
         }
     }
+}
+
+/// Vim's block cursor in Normal mode: a translucent box over the character
+/// the cursor is on, the way a terminal draws it.
+///
+/// The text field only draws a thin caret, so this paints the block
+/// itself. A `canvas` paints with plain code rather than child elements; it
+/// runs after the field has painted this frame, so the field's layout, and
+/// the character's position in it, are already current.
+fn vim_block(cx: &mut Context<NoteEditor>) -> impl IntoElement {
+    let editor = cx.entity().downgrade();
+    let color = cx.theme().caret.opacity(0.35);
+    canvas(
+        |_, _, _| {},
+        move |area, _, window, cx| {
+            let Some(editor) = editor.upgrade() else {
+                return;
+            };
+            let editor = editor.read(cx);
+            let Some(layer) = &editor.vim else { return };
+            if !editor.body_focused(window, cx) {
+                return;
+            }
+            if let Some(block) = layer.block(editor.body.read(cx)) {
+                // Clipped to the text's area, for a line half scrolled away.
+                window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
+                    window.paint_quad(fill(block, color));
+                });
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// Adds `id` if missing, removes it if present.

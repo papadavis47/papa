@@ -15,5 +15,6 @@ Short records of significant decisions: the context, what we chose, and what it 
 | [0009](0009-images-stored-in-the-vault.md) | Images live in the vault, in three versions, one row each | Accepted |
 | [0010](0010-settings-file-and-themes.md) | Settings in a JSON file of their own, held as a GPUI global | Accepted |
 | [0011](0011-command-palette-inside-the-main-view.md) | The command palette lives inside the main view and runs actions | Accepted |
+| [0012](0012-vim-mode-as-a-keystroke-layer.md) | Vim mode is a keystroke layer over the text field, with a pure state machine | Accepted |
 
 Template: copy [0000-template.md](0000-template.md).

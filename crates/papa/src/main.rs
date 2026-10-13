@@ -8,6 +8,7 @@ mod settings_window;
 mod state;
 mod theme;
 mod ui;
+mod vim;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, WindowBounds, WindowDecorations, WindowOptions, px, size};

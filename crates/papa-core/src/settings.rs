@@ -115,6 +115,9 @@ pub struct Editor {
     pub open_notes_in: NoteMode,
     /// See [`AUTOSAVE_DELAYS`].
     pub autosave_delay_ms: u64,
+    /// Edit notes with Vim's keys: Normal, Insert and Visual modes. Off by
+    /// default.
+    pub vim_mode: bool,
 }
 
 impl Default for Editor {
@@ -122,6 +125,7 @@ impl Default for Editor {
         Self {
             open_notes_in: NoteMode::default(),
             autosave_delay_ms: DEFAULT_AUTOSAVE_DELAY,
+            vim_mode: false,
         }
     }
 }
@@ -256,6 +260,7 @@ mod tests {
         settings.appearance.density = Density::Compact;
         settings.appearance.reduce_motion = true;
         settings.editor.open_notes_in = NoteMode::Edit;
+        settings.editor.vim_mode = true;
 
         settings.save(&path).unwrap();
 

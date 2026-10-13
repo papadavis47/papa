@@ -33,9 +33,10 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 │                             preview, children/labels popover,      │
 │                             autosave ── emits Saved / Deleted /    │
 │                             ImagesChanged ──▶                      │
+│                             VimLayer while the setting is on       │
 │                └─ Gallery   (Entity) thumbnail strip; adds images  │
 │                             from the picker, a drop or a paste     │
-│ StatusBar  ── vault path · theme name                              │
+│ StatusBar  ── Vim mode (when on) · vault path · theme name         │
 │ Lightbox   ── (Entity, owned by Gallery) one image over the whole  │
 │               window; key context "Lightbox"                       │
 │ CommandPalette ── (Entity) ⌘K over everything; key context         │
@@ -69,6 +70,11 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
   - **It closes when focus leaves it** (`cx.on_focus_out`): a command that moves focus closes it. Esc first clears the search, then closes. A click outside closes it too.
   - **UI tests** drive it in a headless window with `#[gpui_kit::test]`: type, press Enter or Esc, then check what ran and where focus went.
 - **Keyboard navigation.** ⌘1, ⌘2 and ⌘3 focus the sidebar, the note list and the note. → or Enter moves one pane right, ← or Esc one pane left. Enter in the search box opens the highlighted note. The selected entry of the focused pane has a focus ring: `PapaApp` asks `focus_handle.contains_focused` while rendering, and GPUI redraws the window whenever focus moves. Every entry has a transparent border, so the ring doesn't shift the text.
+- **Vim mode** (off by default; see [ADR 0012](adr/0012-vim-mode-as-a-keystroke-layer.md)) is a layer of its own in `crates/papa/src/vim/`:
+  - **A pure state machine** decides what each key does. `Mode` is an enum whose variants carry their state (`Visual { anchor, head }`, `CommandLine(String)`). A parser turns keys into commands (`2d3w` → delete six words), motions are functions of the text and the cursor, and `Vim::handle` returns `Effect`s (replace a range, select a range, undo, save, leave). It is unit-tested on plain strings.
+  - **`vim::field` plays it on the text field.** A keystroke interceptor (`cx.intercept_keystrokes`) sees every key before key bindings and text input. While the note's text has focus, it hands keys to the machine and consumes those Vim handles, so `x` in Normal mode deletes instead of typing. Edits go through the field's own replace and undo, so autosave and ⌘Z work as before.
+  - **Normal mode's block cursor is painted.** A `canvas` drawn after the field covers the cursor's character with a translucent block, at the position the field reports for it this frame.
+  - **Turning it off drops the layer**, interceptor included, so with the setting off no Vim code runs. The status bar shows the mode and the keys typed so far (`NORMAL  2d`, `:wq`). With Vim on, `j`/`k`, `h`/`l` and `/` also work in the sidebar and the note list, through key bindings scoped to a `vim` flag in those panes' key contexts.
 - **Key precedence does the routing.** When several bindings match a key, GPUI tries the most specific first, and if its handler lets the action propagate, the next. So Esc in the note's text field first does the field's own job (closing its menu, say), and only when it has none does the `NoteEditor` binding take the father back to the list.
 - **Empty states** (`ui/empty_state.rs`, on gpui-kit's `Empty`) say why a pane is empty and offer the next step, with its shortcut: no notes yet, nothing about a child, nothing with a label, no search matches (with "Clear search"), and no note open (a short list of keys).
 - **Motion.** The palette fades and drops in, a note fades in when it opens, and empty states fade and rise. Each is `with_animation(id, Animation, |element, t| …)`: GPUI renders a frame for every step of `t` from 0 to 1, shaped by an easing curve, and keeps the progress under the element's id. A new id replays it, so the palette's id counts openings and the note's id names the note (switching notes replays it, switching Edit and Preview doesn't). The "Reduce motion" setting sets GPUI's `App::reduce_motion`, which makes every animation, gpui-kit's dialogs included, draw its last frame at once.

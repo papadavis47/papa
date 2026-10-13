@@ -4,6 +4,7 @@
 //! (children and labels) and `notes.rs` (the note list and the editor).
 //! Rust allows several `impl` blocks for one type, in different modules.
 
+mod export;
 mod notes;
 mod palette;
 mod sidebar;
@@ -73,6 +74,11 @@ gpui_kit::actions!(
         FocusNoteList,
         /// Move keyboard focus to the open note.
         FocusEditor,
+        /// Save the open note as a PDF.
+        ExportNote,
+        /// Save the notes in the list as a PDF: a child's book, or the
+        /// notes a label or search picked out.
+        ExportNotes,
     ]
 );
 
@@ -123,6 +129,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-f", FocusSearch, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-f", FocusSearch, Some(&in_palette)),
         KeyBinding::new("secondary-shift-o", AddImages, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-p", ExportNote, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-shift-p", ExportNotes, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-k", ToggleCommandPalette, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-1", FocusSidebar, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-2", FocusNoteList, Some(APP_CONTEXT)),
@@ -238,6 +246,9 @@ pub struct PapaApp {
     /// ⌘K. Drawn over everything else while open.
     palette: Entity<CommandPalette>,
     sidebar_visible: bool,
+    /// What's being exported to PDF, for the status bar: "Exporting
+    /// Emma’s book…". One export at a time.
+    exporting: Option<SharedString>,
     /// Clicking an element that tracks a focus handle focuses it. This one is
     /// on the root, so a click anywhere outside the panes still leaves focus
     /// inside `APP_CONTEXT` and the window-wide bindings keep working.
@@ -331,6 +342,7 @@ impl PapaApp {
             editor: None,
             palette,
             sidebar_visible: true,
+            exporting: None,
             focus_handle: cx.focus_handle(),
             sidebar_focus,
             note_list_focus: cx.focus_handle(),
@@ -475,6 +487,8 @@ impl Render for PapaApp {
             .on_action(cx.listener(Self::focus_sidebar))
             .on_action(cx.listener(Self::focus_note_list))
             .on_action(cx.listener(Self::focus_editor))
+            .on_action(cx.listener(Self::export_note))
+            .on_action(cx.listener(Self::export_notes))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -532,6 +546,7 @@ impl Render for PapaApp {
                                                 self.is_open(),
                                                 cx.listener(Self::on_note_list_event),
                                             )
+                                            .export(self.list_export_name(cx))
                                             .focused(note_list_focused),
                                         ),
                                 ),
@@ -545,6 +560,7 @@ impl Render for PapaApp {
                         bar.left(vim_indicator(status, cx))
                     })
                     .left(status)
+                    .when_some(self.exporting.clone(), |bar, exporting| bar.left(exporting))
                     .right(cx.theme().theme_name().clone()),
             )
             .children(lightbox)

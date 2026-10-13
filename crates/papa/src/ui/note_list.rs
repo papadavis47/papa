@@ -20,7 +20,7 @@ use papa_core::{Child, NoteId, NoteSummary};
 
 use super::dates;
 use super::empty_state::EmptyState;
-use crate::app::{APP_CONTEXT, NewNote};
+use crate::app::{APP_CONTEXT, ExportNotes, NewNote};
 
 /// Key context around the search box. Arrow keys bound to `"NoteSearch >
 /// Input"` move through the list while the father types a search.
@@ -70,6 +70,8 @@ pub struct NoteList {
     enabled: bool,
     /// The list has keyboard focus: the selected row gets a focus ring.
     focused: bool,
+    /// What exporting the list makes: "Emma’s book", "3 notes".
+    export: SharedString,
     on_event: OnEvent,
 }
 
@@ -98,8 +100,15 @@ impl NoteList {
             density,
             enabled,
             focused: false,
+            export: SharedString::default(),
             on_event: Rc::new(on_event),
         }
+    }
+
+    /// Names what the export button exports.
+    pub fn export(mut self, export: impl Into<SharedString>) -> Self {
+        self.export = export.into();
+        self
     }
 
     /// Draws the focus ring, for when the list has keyboard focus.
@@ -129,6 +138,20 @@ impl RenderOnce for NoteList {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(self.notes.len().to_string()),
+            )
+            .child(
+                Button::new("export-notes")
+                    .ghost()
+                    .small()
+                    .icon(gpui_kit::assets::IconName::BookDown)
+                    .disabled(!self.enabled || self.notes.is_empty())
+                    .tooltip_with_action(
+                        format!("Export {} to PDF", self.export),
+                        &ExportNotes,
+                        Some(APP_CONTEXT),
+                    )
+                    // Handled by `PapaApp`, which owns exports.
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(ExportNotes), cx)),
             )
             .child(
                 Button::new("new-note")

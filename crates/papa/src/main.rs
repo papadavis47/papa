@@ -2,6 +2,7 @@
 
 mod app;
 mod assets;
+mod export;
 mod palette;
 mod settings;
 mod settings_window;

@@ -30,7 +30,7 @@ use papa_core::{Child, ChildId, Label, LabelId, Note, NoteId, Store};
 
 use super::gallery::{Gallery, GalleryEvent};
 use super::{NoteView, dates, dialogs, sentence};
-use crate::app::{FocusNoteList, NOTE_EDITOR_CONTEXT};
+use crate::app::{APP_CONTEXT, ExportNote, FocusNoteList, NOTE_EDITOR_CONTEXT};
 use crate::settings::AppSettings;
 use crate::theme;
 use crate::vim::{self, Effect, VimLayer};
@@ -146,6 +146,11 @@ impl NoteEditor {
     /// The open note as last stored; its children and labels are current.
     pub fn note(&self) -> Option<&Note> {
         self.note.as_ref()
+    }
+
+    /// The title as typed, which may not be saved yet.
+    pub fn title(&self, cx: &App) -> String {
+        self.title.read(cx).value().to_string()
     }
 
     pub fn gallery(&self) -> &Entity<Gallery> {
@@ -656,6 +661,17 @@ impl NoteEditor {
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.add_images(window, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("export-note")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::FileDown)
+                            .tooltip_with_action("Export to PDF", &ExportNote, Some(APP_CONTEXT))
+                            // Handled by `PapaApp`, which owns exports.
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(ExportNote), cx)
+                            }),
                     )
                     .child(
                         Button::new("delete-note")

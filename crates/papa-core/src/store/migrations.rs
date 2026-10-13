@@ -14,6 +14,7 @@ use crate::{Error, Result};
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_children_and_labels.sql"),
     include_str!("migrations/0002_notes.sql"),
+    include_str!("migrations/0003_images.sql"),
 ];
 
 /// The schema version this build creates and understands.

@@ -26,6 +26,23 @@ pub use note_view::NoteView;
 pub use sidebar::{AppSidebar, SidebarEvent};
 pub use title_bar::AppTitleBar;
 
+/// Shows an error in the active window, or any window, for code that runs
+/// outside one (a global's background task, say).
+pub fn notify_error(title: &'static str, error: impl std::fmt::Display, cx: &mut gpui_kit::App) {
+    use gpui_kit::component::{WindowExt as _, notification::Notification};
+
+    let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) else {
+        eprintln!("papa: {title}: {error}");
+        return;
+    };
+    let message = sentence(error);
+    window
+        .update(cx, |_, window, cx| {
+            window.push_notification(Notification::error(message).title(title), cx)
+        })
+        .ok();
+}
+
 /// Error messages are lowercase by Rust convention; the UI shows sentences.
 pub fn sentence(message: impl std::fmt::Display) -> String {
     let message = message.to_string();

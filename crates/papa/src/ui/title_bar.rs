@@ -5,10 +5,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::{App, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, div};
 
-use crate::app::{APP_CONTEXT, ToggleSidebar, ToggleTheme};
+use super::shortcut;
+use crate::app::{APP_CONTEXT, ToggleCommandPalette, ToggleSidebar, ToggleTheme};
 
-/// The custom title bar: sidebar toggle and app name on the left, theme toggle
-/// on the right.
+/// The custom title bar: sidebar toggle and app name on the left, the
+/// command palette and theme toggle on the right.
 ///
 /// The buttons dispatch the same actions as the keyboard shortcuts, so both
 /// paths run the same handler.
@@ -24,7 +25,7 @@ impl AppTitleBar {
 }
 
 impl RenderOnce for AppTitleBar {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let sidebar_icon = if self.sidebar_visible {
             IconName::PanelLeftClose
         } else {
@@ -62,14 +63,30 @@ impl RenderOnce for AppTitleBar {
                         .child(div().text_sm().font_semibold().child("Papa")),
                 )
                 .child(
-                    Button::new("toggle-theme")
-                        .ghost()
-                        .small()
-                        .icon(theme_icon)
-                        .tooltip_with_action("Toggle light/dark", &ToggleTheme, None)
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(ToggleTheme), cx)
-                        }),
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("command-palette")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Search)
+                                .label("Search")
+                                .children(shortcut(&ToggleCommandPalette, window))
+                                .tooltip("Find notes, children, labels and commands")
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleCommandPalette), cx)
+                                }),
+                        )
+                        .child(
+                            Button::new("toggle-theme")
+                                .ghost()
+                                .small()
+                                .icon(theme_icon)
+                                .tooltip_with_action("Toggle light/dark", &ToggleTheme, None)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleTheme), cx)
+                                }),
+                        ),
                 ),
         )
     }

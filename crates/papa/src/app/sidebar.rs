@@ -52,7 +52,12 @@ impl PapaApp {
         self.catalog_changed(window, cx);
     }
 
-    fn select_filter(&mut self, filter: NoteFilter, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn select_filter(
+        &mut self,
+        filter: NoteFilter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.selection.filter = filter;
         self.refresh_notes(window, cx);
         cx.notify();

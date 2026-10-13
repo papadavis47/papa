@@ -66,6 +66,8 @@ pub struct Appearance {
     /// See [`LINE_HEIGHTS`].
     pub line_height: f32,
     pub density: Density,
+    /// Show things at once instead of animating them in.
+    pub reduce_motion: bool,
 }
 
 impl Default for Appearance {
@@ -80,6 +82,7 @@ impl Default for Appearance {
             text_size: DEFAULT_TEXT_SIZE,
             line_height: DEFAULT_LINE_HEIGHT,
             density: Density::default(),
+            reduce_motion: false,
         }
     }
 }
@@ -251,6 +254,7 @@ mod tests {
         settings.appearance.mode = ColorMode::Dark;
         settings.appearance.ui_font = Some("Inter".into());
         settings.appearance.density = Density::Compact;
+        settings.appearance.reduce_motion = true;
         settings.editor.open_notes_in = NoteMode::Edit;
 
         settings.save(&path).unwrap();

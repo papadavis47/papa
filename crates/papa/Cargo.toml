@@ -22,3 +22,8 @@ papa-core.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The same gpui-kit, plus a headless test window for UI tests: render real
+# components, press keys, then check state, focus and callbacks.
+gpui-kit = { version = "0.7", features = ["test-support"] }

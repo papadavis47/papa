@@ -67,6 +67,12 @@ The app keeps its vault in your OS data directory (`~/.local/share/papa/vault.db
 PAPA_VAULT=/tmp/papa-dev.db cargo run
 ```
 
+Settings live apart from the vault, in `~/.config/papa/settings.json` on Linux and `~/Library/Application Support/papa/settings.json` on macOS, with your own theme files in a `themes` folder next to it. `PAPA_CONFIG_DIR` points both somewhere else:
+
+```sh
+PAPA_VAULT=/tmp/papa-dev.db PAPA_CONFIG_DIR=/tmp/papa-dev-config cargo run
+```
+
 ## Privacy
 
 Real vaults live in your operating system's app-data directory, never in this repository. Anything shared through the cloud is encrypted on your device first, so the server only ever stores ciphertext. Screenshots and test data use invented children and notes.

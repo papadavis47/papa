@@ -459,6 +459,11 @@ fn editor_page() -> SettingPage {
         set(|s, value: f64| s.editor.autosave_delay_ms = value.round() as u64),
     )
     .default_value(defaults::DEFAULT_AUTOSAVE_DELAY as f64);
+    let vim_mode = SettingField::switch(
+        get(|s| s.editor.vim_mode),
+        set(|s, value: bool| s.editor.vim_mode = value),
+    )
+    .default_value(false);
 
     SettingPage::new("Editor").icon(IconName::FileText).group(
         SettingGroup::new()
@@ -471,6 +476,13 @@ fn editor_page() -> SettingPage {
                 SettingItem::new("Autosave delay", autosave)
                     .description("Milliseconds of quiet before what you type is saved.")
                     .keywords(["save", "debounce"]),
+            )
+            .item(
+                SettingItem::new("Vim mode", vim_mode)
+                    .description(
+                        "Edit notes with Vim's keys. Press i to type, Esc to stop, :w to save.",
+                    )
+                    .keywords(["vi", "modal", "keys", "normal", "insert"]),
             ),
     )
 }

@@ -5218,6 +5218,8 @@ dependencies = [
  "dirs 7.0.0",
  "image",
  "jiff",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror 2.0.21",

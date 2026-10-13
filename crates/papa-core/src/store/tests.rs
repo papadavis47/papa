@@ -1,8 +1,10 @@
 //! Tests go through the public `Store` handle, so they cover the actor thread
 //! and the SQL together. Each test gets its own in-memory or temporary vault.
 
+use super::db::SELECT_IMAGES;
 use super::*;
-use crate::{NoteDraft, NoteFilter, NoteQuery};
+use crate::images::{self, tests::sample};
+use crate::{EncodedImage, ImageFormat, NoteDraft, NoteFilter, NoteQuery, PreparedImage};
 
 fn draft(name: &str, color: u32) -> ChildDraft {
     ChildDraft {
@@ -255,7 +257,7 @@ async fn a_new_note_round_trips() {
     assert_eq!(added.created_at, added.updated_at);
     assert_eq!(store.note(added.id).await.unwrap(), added);
     let listed = store.notes(NoteQuery::default()).await.unwrap();
-    assert_eq!(listed, [added.summary()]);
+    assert_eq!(listed, [added.summary(0)]);
     assert_eq!(listed[0].preview, "She refused the training wheels.");
 }
 
@@ -486,4 +488,189 @@ async fn a_deleted_note_leaves_only_a_tombstone() {
         row.get(2).unwrap(),
     );
     assert_eq!((title.as_str(), body.as_str(), deleted), ("", "", 1));
+}
+
+// --- Images ---
+
+fn png(width: u32, height: u32) -> PreparedImage {
+    images::prepare(sample(image::ImageFormat::Png, width, height)).unwrap()
+}
+
+#[tokio::test]
+async fn an_image_round_trips_with_its_thumbnail() {
+    let store = Store::open_in_memory().await.unwrap();
+    let note = store.add_note(note("Drawing", "")).await.unwrap();
+    let prepared = png(300, 200);
+
+    let added = store.add_image(note.id, prepared.clone()).await.unwrap();
+
+    assert_eq!(added.note_id, note.id);
+    assert_eq!(added.format, ImageFormat::Png);
+    assert_eq!((added.width, added.height), (300, 200));
+    assert_eq!(added.thumb, prepared.thumb);
+    assert_eq!(
+        store.note_images(note.id).await.unwrap(),
+        std::slice::from_ref(&added)
+    );
+    // Small and upright: the original is shown as it is.
+    assert_eq!(
+        store.display_image(added.id).await.unwrap(),
+        prepared.original
+    );
+    let listed = store.notes(NoteQuery::default()).await.unwrap();
+    assert_eq!(listed[0].images, 1);
+    let touched = store.note(note.id).await.unwrap();
+    assert!(touched.updated_at >= note.updated_at);
+}
+
+#[tokio::test]
+async fn a_large_image_is_displayed_from_its_smaller_copy() {
+    let store = Store::open_in_memory().await.unwrap();
+    let note = store.add_note(note("Beach", "")).await.unwrap();
+    let prepared = images::prepare(sample(image::ImageFormat::Jpeg, 3000, 2000)).unwrap();
+
+    let added = store.add_image(note.id, prepared.clone()).await.unwrap();
+
+    let shown = store.display_image(added.id).await.unwrap();
+    assert_eq!(Some(shown), prepared.display);
+}
+
+#[tokio::test]
+async fn images_are_listed_in_the_order_they_were_added() {
+    let store = Store::open_in_memory().await.unwrap();
+    let note = store.add_note(note("Holiday", "")).await.unwrap();
+
+    let mut added = Vec::new();
+    for width in [30, 10, 20] {
+        added.push(store.add_image(note.id, png(width, 10)).await.unwrap());
+    }
+
+    assert_eq!(store.note_images(note.id).await.unwrap(), added);
+}
+
+#[tokio::test]
+async fn attaching_the_same_image_twice_keeps_one_copy() {
+    let store = Store::open_in_memory().await.unwrap();
+    let drawing = store.add_note(note("Drawing", "")).await.unwrap();
+    let other = store.add_note(note("Fridge", "")).await.unwrap();
+
+    let first = store.add_image(drawing.id, png(20, 20)).await.unwrap();
+    let again = store.add_image(drawing.id, png(20, 20)).await.unwrap();
+    let elsewhere = store.add_image(other.id, png(20, 20)).await.unwrap();
+
+    assert_eq!(again, first);
+    assert_eq!(store.note_images(drawing.id).await.unwrap().len(), 1);
+    assert_ne!(elsewhere.id, first.id, "another note gets its own copy");
+}
+
+#[tokio::test]
+async fn a_deleted_image_is_gone() {
+    let store = Store::open_in_memory().await.unwrap();
+    let note = store.add_note(note("Drawing", "")).await.unwrap();
+    let kept = store.add_image(note.id, png(10, 10)).await.unwrap();
+    let removed = store.add_image(note.id, png(20, 20)).await.unwrap();
+
+    store.delete_image(removed.id).await.unwrap();
+
+    assert_eq!(store.note_images(note.id).await.unwrap(), [kept]);
+    assert!(matches!(
+        store.display_image(removed.id).await,
+        Err(Error::NotFound("image"))
+    ));
+    assert!(matches!(
+        store.delete_image(removed.id).await,
+        Err(Error::NotFound("image"))
+    ));
+}
+
+#[tokio::test]
+async fn images_can_only_be_attached_to_live_notes() {
+    let store = Store::open_in_memory().await.unwrap();
+    let note = store.add_note(note("Gone", "")).await.unwrap();
+    store.delete_note(note.id).await.unwrap();
+
+    let attached = store.add_image(note.id, png(10, 10)).await;
+
+    assert!(matches!(attached, Err(Error::NotFound("note"))));
+}
+
+#[tokio::test]
+async fn deleting_a_note_deletes_its_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    let store = Store::open(&path).await.unwrap();
+    let note = store.add_note(note("Secret", "")).await.unwrap();
+    store.add_image(note.id, png(10, 10)).await.unwrap();
+
+    store.delete_note(note.id).await.unwrap();
+    drop(store);
+
+    let db = Db::open(&Location::File(path)).await.unwrap();
+    for table in ["image", "image_data"] {
+        let mut rows = db
+            .connection()
+            .query(&format!("SELECT count(*) FROM {table}"), ())
+            .await
+            .unwrap();
+        let count: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        assert_eq!(count, 0, "rows left in {table}");
+    }
+}
+
+#[tokio::test]
+async fn large_images_survive_reopening_the_vault() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault.db");
+    let store = Store::open(&path).await.unwrap();
+    let note = store.add_note(note("Big", "")).await.unwrap();
+    // The store doesn't decode images, so made-up bytes do. 12 MB spans
+    // thousands of database pages.
+    let original: Vec<u8> = (0..12_000_000u32).map(|i| (i % 251) as u8).collect();
+    let thumb = EncodedImage {
+        format: ImageFormat::Jpeg,
+        bytes: vec![1, 2, 3],
+    };
+    let image = PreparedImage {
+        original: EncodedImage {
+            format: ImageFormat::Jpeg,
+            bytes: original.clone(),
+        },
+        display: None,
+        thumb: thumb.clone(),
+        width: 4000,
+        height: 3000,
+        sha256: "made-up".into(),
+    };
+    let added = store.add_image(note.id, image).await.unwrap();
+    drop(store);
+
+    let store = Store::open(&path).await.unwrap();
+
+    let shown = store.display_image(added.id).await.unwrap();
+    assert!(shown.bytes == original, "the bytes came back changed");
+    assert_eq!(store.note_images(note.id).await.unwrap()[0].thumb, thumb);
+}
+
+#[tokio::test]
+async fn image_queries_never_scan_the_image_bytes() {
+    // A scan of `image_data` reads every original in the vault: seconds,
+    // not milliseconds. Checked on the plans, as timing would be flaky.
+    let db = Db::open(&Location::Memory).await.unwrap();
+    let queries = [
+        format!("{SELECT_IMAGES} WHERE image.note_id = ?1 AND ?2 ORDER BY image.id"),
+        format!("{SELECT_IMAGES} WHERE image.note_id = ?1 AND image.sha256 = ?2"),
+        "SELECT mime, bytes FROM image_data WHERE image_id = ?1 AND kind = ?2".into(),
+    ];
+    for sql in queries {
+        // Every query takes two parameters; `AND ?2` pads the first.
+        let mut rows = db
+            .connection()
+            .query(&format!("EXPLAIN QUERY PLAN {sql}"), ("x", 1))
+            .await
+            .unwrap();
+        while let Some(row) = rows.next().await.unwrap() {
+            let step: String = row.get(3).unwrap();
+            assert!(!step.starts_with("SCAN"), "{step}\nin: {sql}");
+        }
+    }
 }

@@ -23,8 +23,8 @@ use std::thread;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    Child, ChildDraft, ChildId, Error, Label, LabelId, Note, NoteDraft, NoteId, NoteQuery,
-    NoteSummary, Result,
+    Child, ChildDraft, ChildId, EncodedImage, Error, ImageId, Label, LabelId, Note, NoteDraft,
+    NoteId, NoteImage, NoteQuery, NoteSummary, PreparedImage, Result,
 };
 use db::{Db, Location};
 
@@ -58,6 +58,12 @@ enum Request {
     SetNoteChildren(NoteId, Vec<ChildId>, Reply<Note>),
     SetNoteLabels(NoteId, Vec<LabelId>, Reply<Note>),
     DeleteNote(NoteId, Reply<()>),
+    NoteImages(NoteId, Reply<Vec<NoteImage>>),
+    // Boxed: a `PreparedImage` is much larger than the other variants, and
+    // an enum is as large as its largest variant.
+    AddImage(NoteId, Box<PreparedImage>, Reply<NoteImage>),
+    DisplayImage(ImageId, Reply<EncodedImage>),
+    DeleteImage(ImageId, Reply<()>),
 }
 
 impl Store {
@@ -168,8 +174,33 @@ impl Store {
             .await
     }
 
+    /// Deletes a note, and its images with it.
     pub async fn delete_note(&self, id: NoteId) -> Result<()> {
         self.call(|reply| Request::DeleteNote(id, reply)).await
+    }
+
+    /// A note's images in the order they were added, with thumbnails.
+    pub async fn note_images(&self, note: NoteId) -> Result<Vec<NoteImage>> {
+        self.call(|reply| Request::NoteImages(note, reply)).await
+    }
+
+    /// Attaches an image made by [`images::prepare`](crate::images::prepare).
+    /// If the note already has the same image, returns that one instead.
+    pub async fn add_image(&self, note: NoteId, image: PreparedImage) -> Result<NoteImage> {
+        let image = Box::new(image);
+        self.call(|reply| Request::AddImage(note, image, reply))
+            .await
+    }
+
+    /// The image to show full size: at most
+    /// [`DISPLAY_EDGE`](crate::images::DISPLAY_EDGE) pixels, upright.
+    pub async fn display_image(&self, id: ImageId) -> Result<EncodedImage> {
+        self.call(|reply| Request::DisplayImage(id, reply)).await
+    }
+
+    /// Deletes an image and its bytes.
+    pub async fn delete_image(&self, id: ImageId) -> Result<()> {
+        self.call(|reply| Request::DeleteImage(id, reply)).await
     }
 
     /// Sends the request built by `request` and waits for the reply.
@@ -264,6 +295,18 @@ async fn handle(db: &mut Db, request: Request) {
         }
         Request::DeleteNote(id, reply) => {
             let _ = reply.send(db.delete_note(id).await);
+        }
+        Request::NoteImages(note, reply) => {
+            let _ = reply.send(db.note_images(note).await);
+        }
+        Request::AddImage(note, image, reply) => {
+            let _ = reply.send(db.add_image(note, *image).await);
+        }
+        Request::DisplayImage(id, reply) => {
+            let _ = reply.send(db.display_image(id).await);
+        }
+        Request::DeleteImage(id, reply) => {
+            let _ = reply.send(db.delete_image(id).await);
         }
     }
 }

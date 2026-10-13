@@ -29,6 +29,7 @@ use papa_core::{Child, Label, NoteFilter, NoteSummary, Store, paths};
 
 use crate::state::Selection;
 use crate::theme;
+use crate::ui::lightbox::{CloseLightbox, LIGHTBOX_CONTEXT, NextImage, PreviousImage};
 use crate::ui::{
     AppSidebar, AppTitleBar, NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteView, sentence,
 };
@@ -56,6 +57,8 @@ gpui_kit::actions!(
         TogglePreview,
         /// Jump to the search box.
         FocusSearch,
+        /// Choose images to add to the open note.
+        AddImages,
     ]
 );
 
@@ -87,6 +90,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-n", NewNote, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-e", TogglePreview, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-f", FocusSearch, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-shift-o", AddImages, Some(APP_CONTEXT)),
+        KeyBinding::new("escape", CloseLightbox, Some(LIGHTBOX_CONTEXT)),
+        KeyBinding::new("right", NextImage, Some(LIGHTBOX_CONTEXT)),
+        KeyBinding::new("left", PreviousImage, Some(LIGHTBOX_CONTEXT)),
         KeyBinding::new("down", SelectNextFilter, Some(SIDEBAR_CONTEXT)),
         KeyBinding::new("up", SelectPreviousFilter, Some(SIDEBAR_CONTEXT)),
         KeyBinding::new("down", SelectNextNote, Some(NOTE_LIST_CONTEXT)),
@@ -322,6 +329,12 @@ impl Render for PapaApp {
             Some(editor) => editor.clone().into_any_element(),
             None => NoteView.into_any_element(),
         };
+        // Last child, so it's drawn over the panes. Renders nothing while
+        // closed.
+        let lightbox = self
+            .editor
+            .as_ref()
+            .map(|editor| editor.read(cx).gallery().read(cx).lightbox().clone());
 
         v_flex()
             .key_context(APP_CONTEXT)
@@ -330,6 +343,7 @@ impl Render for PapaApp {
             .on_action(cx.listener(Self::new_note))
             .on_action(cx.listener(Self::toggle_preview))
             .on_action(cx.listener(Self::focus_search))
+            .on_action(cx.listener(Self::add_images))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -396,6 +410,7 @@ impl Render for PapaApp {
                         "Light"
                     }),
             )
+            .children(lightbox)
     }
 }
 

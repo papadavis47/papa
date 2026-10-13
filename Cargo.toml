@@ -22,3 +22,20 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
+
+# Image codecs are pure Rust and painfully slow unoptimised: decoding one
+# phone photo takes seconds in a plain debug build. Optimising just these
+# crates keeps debug builds of our own code fast to compile.
+[profile.dev.package]
+image = { opt-level = 3 }
+image-webp = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-core = { opt-level = 3 }
+png = { opt-level = 3 }
+fdeflate = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+gif = { opt-level = 3 }
+weezl = { opt-level = 3 }
+moxcms = { opt-level = 3 }
+sha2 = { opt-level = 3 }

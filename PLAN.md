@@ -2,7 +2,7 @@
 
 A private, local-first journal for fathers. A father keeps a profile for each of his children and writes notes about them. He can choose to share some notes with a child, who opens them in the same app. Father and child can message each other.
 
-> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–2 are done; Phase 3 (notes) is in review.
+> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–3 are done; Phase 4 (images) is in review.
 
 ---
 
@@ -167,13 +167,14 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
 
 | Table | Key columns |
 |---|---|
-| `profile` | id, display_name, email, avatar_blob_id, created_at |
-| `child` | id, name, birth_date, color, avatar_blob_id, sort_order, archived_at |
+| `profile` | id, display_name, email, avatar_image_id, created_at |
+| `child` | id, name, birth_date, color, avatar_image_id, sort_order, archived_at |
 | `label` | id, name, color, sort_order |
 | `note` | id, title, body_md, pinned, created_at, updated_at, deleted_at |
 | `note_child` | note_id, child_id — *many-to-many: one note can be about several children* |
 | `note_label` | note_id, label_id |
-| `blob` | id, note_id, mime, bytes, width, height, sha256, thumb (small BLOB) |
+| `image` | id, note_id, mime, width, height, sha256, created_at |
+| `image_data` | image_id, kind (thumb / display / original), mime, bytes — *one row per version; see [ADR 0009](docs/adr/0009-images-stored-in-the-vault.md)* |
 | `share` | child_id, remote_db, wrapped_content_key, key_salt, status, last_synced_at |
 | `note_share` | note_id, child_id, shared_at, remote_version — *which notes each child can see* |
 | `message` | id, child_id, direction, body, created_at, read_at, remote_id |
@@ -287,7 +288,7 @@ Each phase ends with something runnable. Each one has a short "what you'll learn
 | 0 ✅ | **Foundations** | Cargo workspace, crate split, CI (build + clippy on Linux/macOS) | workspaces, features, `cargo` profiles |
 | 1 ✅ | **App shell** | Window, `Root`, custom `TitleBar`, Sidebar + 3 resizable panes with placeholder data, Light/Dark toggle, first actions + keybindings | `Entity`, `Render` vs `RenderOnce`, `Context`, actions, key contexts, the gpui-kit layout helpers (`h_flex`/`v_flex`) |
 | 2 ✅ | **Local storage** | `papa-core::Store` on `turso`, migrations, the database actor thread, CRUD for children and labels wired into the UI | async Rust, tokio vs GPUI executors, channels, `thiserror`/`anyhow`, testing with a temporary database |
-| 3 | **Notes** | Note list (virtualized), Markdown editor + preview, autosave, assign to children, labels, filtering, search | `EditorState`, subscriptions/events, debouncing with tasks, `TextView` |
+| 3 ✅ | **Notes** | Note list (virtualized), Markdown editor + preview, autosave, assign to children, labels, filtering, search | `EditorState`, subscriptions/events, debouncing with tasks, `TextView` |
 | 4 | **Images** | Attach with drag and drop/paste/picker, thumbnails in the background, gallery and lightbox | `image` crate, background tasks, `img()` / `ImageSource`, file dialogs |
 | 5 | **Settings & themes** | Settings panel, settings.json, font/size/density, bundled + user themes with hot reload | serde, globals (`cx.set_global`), `ThemeRegistry`, observing settings changes |
 | 6 | **Command palette & polish** | ⌘K palette, empty states, animations, keyboard navigation everywhere | `Command`, focus handles, motion |

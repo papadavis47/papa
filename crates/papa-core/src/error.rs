@@ -33,6 +33,33 @@ pub enum Error {
     #[error("the vault contains an invalid {what}: {value:?}")]
     Corrupt { what: &'static str, value: String },
 
+    #[error("the image is larger than 50 MB")]
+    ImageTooLarge,
+
+    #[error("the image has more than 100 megapixels")]
+    ImageTooManyPixels,
+
+    #[error(
+        "Papa can't read HEIC photos yet. Export it as JPEG first, or set your \
+         iPhone to save JPEG: Settings → Camera → Formats → Most Compatible"
+    )]
+    HeicImage,
+
+    #[error("that isn't an image Papa can read; use JPEG, PNG, GIF or WebP")]
+    UnsupportedImage,
+
+    /// The file looks like a supported image but doesn't decode.
+    #[error("the image is damaged or incomplete ({0})")]
+    InvalidImage(String),
+
+    /// The reason is part of the message, not a `#[source]`: the app shows
+    /// it in a notification, which displays only the top error.
+    #[error("couldn't read {}: {reason}", path.display())]
+    ReadFile {
+        path: PathBuf,
+        reason: std::io::Error,
+    },
+
     #[error("couldn't find the system data folder; set PAPA_VAULT to a vault file path")]
     NoDataDir,
 

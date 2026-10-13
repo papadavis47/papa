@@ -4,11 +4,14 @@
 //! parent passes in, consumed when rendered. State lives in the `PapaApp`
 //! entity; these only describe how it looks and report clicks back through
 //! callbacks. The exceptions are entities with state of their own:
-//! `NameForm` holds a dialog's half-typed input, and `NoteEditor` the open
-//! note's text and its pending save.
+//! `NameForm` holds a dialog's half-typed input, `NoteEditor` the open
+//! note's text and its pending save, `Gallery` the note's images and
+//! `Lightbox` the one shown full size.
 
 mod dates;
 pub mod dialogs;
+mod gallery;
+pub mod lightbox;
 mod name_form;
 mod note_editor;
 mod note_list;

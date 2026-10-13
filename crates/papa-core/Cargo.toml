@@ -10,8 +10,14 @@ publish.workspace = true
 [dependencies]
 # Finds the OS data directory for the default vault location.
 dirs = "7.0.0"
+# Decodes, rotates, shrinks and re-encodes attached photos. Only the formats
+# Papa accepts; the default features would add a dozen more, and AVIF needs
+# a C library.
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 # Timestamps for notes (stored as Unix milliseconds).
 jiff = "0.2.38"
+# Content hashes of images, so attaching the same photo twice is a no-op.
+sha2 = "0.10.9"
 thiserror = "2.0.21"
 # Runs the database actor: a single-threaded runtime on its own thread, plus
 # the channels the UI uses to talk to it.

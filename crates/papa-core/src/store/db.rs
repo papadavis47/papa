@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use jiff::Timestamp;
-use turso::{Builder, Connection, Database, Row};
+use turso::{Builder, Connection, Database, Row, Value};
 
 use super::migrations;
 use crate::model::{SearchTerms, check_color, clean_child_name, clean_label_name, preview};
 use crate::{
-    Child, ChildDraft, ChildId, Error, Label, LabelId, Note, NoteDraft, NoteFilter, NoteId,
-    NoteQuery, NoteSummary, Result,
+    Child, ChildDraft, ChildId, EncodedImage, Error, ImageFormat, ImageId, Label, LabelId, Note,
+    NoteDraft, NoteFilter, NoteId, NoteImage, NoteQuery, NoteSummary, PreparedImage, Result,
 };
 
 /// Where the vault lives.
@@ -227,6 +227,7 @@ impl Db {
                 title,
                 children: Vec::new(),
                 labels: Vec::new(),
+                images: 0,
                 created_at: timestamp(&row, 3)?,
             });
         }
@@ -236,11 +237,30 @@ impl Db {
 
         let mut children = self.linked(&CHILD_LINKS, None).await?;
         let mut labels = self.linked(&LABEL_LINKS, None).await?;
+        let mut images = self.image_counts().await?;
         for note in &mut notes {
             note.children = children.remove(&note.id).unwrap_or_default();
             note.labels = labels.remove(&note.id).unwrap_or_default();
+            note.images = images.remove(&note.id).unwrap_or_default();
         }
         Ok(notes)
+    }
+
+    /// How many images each note has, for notes that have any.
+    async fn image_counts(&self) -> Result<HashMap<NoteId, usize>> {
+        let mut rows = self
+            .conn
+            .query("SELECT note_id, count(*) FROM image GROUP BY note_id", ())
+            .await?;
+        let mut counts = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            let count: i64 = row.get(1)?;
+            counts.insert(
+                parse_id(&row, 0, "note id")?,
+                usize::try_from(count).unwrap_or_default(),
+            );
+        }
+        Ok(counts)
     }
 
     pub(super) async fn note(&self, id: NoteId) -> Result<Note> {
@@ -323,8 +343,8 @@ impl Db {
         self.relink(id, &LABEL_LINKS, labels).await
     }
 
-    /// Wipes a note's text and links and marks it deleted. See the `note`
-    /// table in the migration for why the row stays.
+    /// Wipes a note's text, links and images and marks it deleted. See the
+    /// `note` table in the migration for why the row stays.
     pub(super) async fn delete_note(&mut self, id: NoteId) -> Result<()> {
         let tx = self.conn.transaction().await?;
         let changed = tx
@@ -338,6 +358,144 @@ impl Db {
         found(changed, "note")?;
         set_links::<ChildId>(&tx, &CHILD_LINKS, id, &[]).await?;
         set_links::<LabelId>(&tx, &LABEL_LINKS, id, &[]).await?;
+        // The tombstone stays, so the images' `ON DELETE CASCADE` doesn't
+        // fire: delete them here. Their bytes cascade from the images.
+        tx.execute("DELETE FROM image WHERE note_id = ?1", [id.to_string()])
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // --- Images ---
+
+    /// A note's images, in the order they were added, with thumbnails.
+    pub(super) async fn note_images(&self, note: NoteId) -> Result<Vec<NoteImage>> {
+        let mut rows = self
+            .conn
+            .query(
+                &format!("{SELECT_IMAGES} WHERE image.note_id = ?1 ORDER BY image.id"),
+                [note.to_string()],
+            )
+            .await?;
+        let mut images = Vec::new();
+        while let Some(row) = rows.next().await? {
+            images.push(image_from_row(&row)?);
+        }
+        Ok(images)
+    }
+
+    /// Attaches `image` to `note`. If the note already has the same image
+    /// (by hash), returns that one instead of storing a copy.
+    pub(super) async fn add_image(
+        &mut self,
+        note: NoteId,
+        image: PreparedImage,
+    ) -> Result<NoteImage> {
+        let mut rows = self
+            .conn
+            .query(
+                &format!("{SELECT_IMAGES} WHERE image.note_id = ?1 AND image.sha256 = ?2"),
+                (note.to_string(), image.sha256.as_str()),
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            return image_from_row(&row);
+        }
+        drop(rows);
+
+        let id = ImageId::new();
+        let now = Timestamp::now().as_millisecond();
+        // All or nothing: no image without its bytes, and no bytes left over
+        // if the note was deleted meanwhile.
+        let tx = self.conn.transaction().await?;
+        // Touching the note also checks it still exists.
+        let changed = tx
+            .execute(
+                "UPDATE note SET updated_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+                (note.to_string(), now),
+            )
+            .await?;
+        found(changed, "note")?;
+        tx.execute(
+            "INSERT INTO image (id, note_id, mime, width, height, sha256, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                id.to_string(),
+                note.to_string(),
+                image.original.format.mime(),
+                image.width,
+                image.height,
+                image.sha256.as_str(),
+                now,
+            ),
+        )
+        .await?;
+        let versions = [
+            ("thumb", Some(&image.thumb)),
+            ("display", image.display.as_ref()),
+            ("original", Some(&image.original)),
+        ];
+        for (kind, version) in versions {
+            let Some(version) = version else { continue };
+            tx.execute(
+                "INSERT INTO image_data (image_id, kind, mime, bytes) VALUES (?1, ?2, ?3, ?4)",
+                (
+                    id.to_string(),
+                    kind,
+                    version.format.mime(),
+                    version.bytes.as_slice(),
+                ),
+            )
+            .await?;
+        }
+        tx.commit().await?;
+
+        Ok(NoteImage {
+            id,
+            note_id: note,
+            format: image.original.format,
+            width: image.width,
+            height: image.height,
+            thumb: image.thumb,
+        })
+    }
+
+    /// The version of an image to show full size: the display copy, or the
+    /// original when it needed none.
+    ///
+    /// Two lookups rather than one query that picks between both rows:
+    /// choosing in SQL would read the original's megabytes even when the
+    /// display copy wins.
+    pub(super) async fn display_image(&self, id: ImageId) -> Result<EncodedImage> {
+        for kind in ["display", "original"] {
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT mime, bytes FROM image_data WHERE image_id = ?1 AND kind = ?2",
+                    (id.to_string(), kind),
+                )
+                .await?;
+            if let Some(row) = rows.next().await? {
+                return encoded_image(&row, 0);
+            }
+        }
+        Err(Error::NotFound("image"))
+    }
+
+    /// Removes an image and its bytes for good, and touches its note so it
+    /// counts as changed.
+    pub(super) async fn delete_image(&mut self, id: ImageId) -> Result<()> {
+        let tx = self.conn.transaction().await?;
+        tx.execute(
+            "UPDATE note SET updated_at = ?2 \
+             WHERE id = (SELECT note_id FROM image WHERE id = ?1)",
+            (id.to_string(), Timestamp::now().as_millisecond()),
+        )
+        .await?;
+        let changed = tx
+            .execute("DELETE FROM image WHERE id = ?1", [id.to_string()])
+            .await?;
+        found(changed, "image")?;
         tx.commit().await?;
         Ok(())
     }
@@ -495,6 +653,45 @@ fn child_from_row(row: &Row) -> Result<Child> {
             value: color.to_string(),
         })?,
     })
+}
+
+/// Images with their thumbnails, as [`image_from_row`] reads them. Add a
+/// `WHERE` clause.
+pub(super) const SELECT_IMAGES: &str = "SELECT image.id, image.note_id, image.mime, image.width, \
+     image.height, thumb.mime, thumb.bytes FROM image \
+     JOIN image_data thumb ON thumb.image_id = image.id AND thumb.kind = 'thumb'";
+
+fn image_from_row(row: &Row) -> Result<NoteImage> {
+    Ok(NoteImage {
+        id: parse_id(row, 0, "image id")?,
+        note_id: parse_id(row, 1, "note id")?,
+        format: image_format(row, 2)?,
+        width: row.get(3)?,
+        height: row.get(4)?,
+        thumb: encoded_image(row, 5)?,
+    })
+}
+
+/// Reads column `idx` as a MIME type.
+fn image_format(row: &Row, idx: usize) -> Result<ImageFormat> {
+    let mime: String = row.get(idx)?;
+    ImageFormat::from_mime(&mime).ok_or(Error::Corrupt {
+        what: "image type",
+        value: mime,
+    })
+}
+
+/// Reads an image's MIME type from column `idx` and its bytes from the next.
+fn encoded_image(row: &Row, idx: usize) -> Result<EncodedImage> {
+    let format = image_format(row, idx)?;
+    // turso has no `FromValue` for `Vec<u8>`; take the `Value` apart instead.
+    match row.get_value(idx + 1)? {
+        Value::Blob(bytes) => Ok(EncodedImage { format, bytes }),
+        _ => Err(Error::Corrupt {
+            what: "image",
+            value: "something other than bytes".into(),
+        }),
+    }
 }
 
 /// Reads column `idx` as text and parses it into an id type.

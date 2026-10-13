@@ -17,13 +17,14 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Task, WeakEntity, Window, div, rgb,
+    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
+    ExternalPaths, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div, rgb,
 };
 use jiff::tz::TimeZone;
 use papa_core::{Child, ChildId, Label, LabelId, Note, NoteId, Store};
 
+use super::gallery::{Gallery, GalleryEvent};
 use super::{NoteView, dates, dialogs, sentence};
 
 /// How long typing must pause before the note is saved.
@@ -36,6 +37,8 @@ pub enum NoteEditorEvent {
     /// The note was stored: its text, children or labels changed.
     Saved(Note),
     Deleted(NoteId),
+    /// An image was added to or removed from the note.
+    ImagesChanged(NoteId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +61,8 @@ pub struct NoteEditor {
     labels: Rc<Vec<Label>>,
     title: Entity<InputState>,
     body: Entity<TextareaState>,
+    /// The note's images, under the body.
+    gallery: Entity<Gallery>,
     mode: Mode,
     /// The body shown in preview. Copied from the text field on entering
     /// preview, rather than on every frame.
@@ -87,9 +92,13 @@ impl NoteEditor {
                 .placeholder("Write about the day… Markdown works: **bold**, # Heading, - list")
                 .soft_wrap(true)
         });
+        let gallery = cx.new(|cx| Gallery::new(store.clone(), window, cx));
         let subscriptions = vec![
             cx.subscribe_in(&title, window, Self::on_title_event),
             cx.subscribe_in(&body, window, Self::on_body_event),
+            cx.subscribe(&gallery, |_, _, event: &GalleryEvent, cx| match *event {
+                GalleryEvent::Changed(note) => cx.emit(NoteEditorEvent::ImagesChanged(note)),
+            }),
             // GPUI awaits the returned future (briefly) before exiting.
             cx.on_app_quit(Self::save_before_quit),
         ];
@@ -100,6 +109,7 @@ impl NoteEditor {
             labels: Rc::default(),
             title,
             body,
+            gallery,
             mode: Mode::Preview,
             preview: SharedString::default(),
             dirty: false,
@@ -112,6 +122,16 @@ impl NoteEditor {
 
     pub fn note_id(&self) -> Option<NoteId> {
         self.note.as_ref().map(|note| note.id)
+    }
+
+    pub fn gallery(&self) -> &Entity<Gallery> {
+        &self.gallery
+    }
+
+    /// Opens the file picker to add images to the note.
+    pub fn add_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.gallery
+            .update(cx, |gallery, cx| gallery.pick_files(window, cx));
     }
 
     /// Shows `note`, saving the previous one first if it changed.
@@ -134,14 +154,21 @@ impl NoteEditor {
         if note.title.is_empty() && note.body.is_empty() {
             self.mode = Mode::Edit;
         }
+        self.show_images(Some(note.id), window, cx);
         self.note = Some(note);
         cx.notify();
+    }
+
+    fn show_images(&self, note: Option<NoteId>, window: &mut Window, cx: &mut Context<Self>) {
+        self.gallery
+            .update(cx, |gallery, cx| gallery.show(note, window, cx));
     }
 
     /// Saves and clears the editor.
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.flush(window, cx);
         self.note = None;
+        self.show_images(None, window, cx);
         cx.notify();
     }
 
@@ -318,6 +345,29 @@ impl NoteEditor {
         }
     }
 
+    // --- Images ---
+
+    /// The paste hook of both text fields: images and image files on the
+    /// clipboard go to the gallery; anything else pastes as text.
+    fn paste_images(
+        editor: WeakEntity<Self>,
+    ) -> impl Fn(&ClipboardItem, &mut Window, &mut App) -> bool + 'static {
+        move |item, window, cx| {
+            editor
+                .update(cx, |this, cx| {
+                    this.gallery
+                        .update(cx, |gallery, cx| gallery.paste(item, window, cx))
+                })
+                .unwrap_or(false)
+        }
+    }
+
+    fn drop_files(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        self.gallery.update(cx, |gallery, cx| {
+            gallery.add_files(paths.paths(), window, cx)
+        });
+    }
+
     // --- Children and labels ---
 
     fn toggle_child(&mut self, id: ChildId, window: &mut Window, cx: &mut Context<Self>) {
@@ -408,6 +458,7 @@ impl NoteEditor {
                 Ok(()) => {
                     if this.note_id() == Some(id) {
                         this.note = None;
+                        this.show_images(None, window, cx);
                     }
                     cx.emit(NoteEditorEvent::Deleted(id));
                     cx.notify();
@@ -470,16 +521,29 @@ impl NoteEditor {
             .children(labels)
             .child(div().flex_1())
             .child(
-                h_flex().gap_1().child(mode_tabs).child(
-                    Button::new("delete-note")
-                        .ghost()
-                        .small()
-                        // Not in the components' `IconName`; see
-                        // `assets.rs`.
-                        .icon(gpui_kit::assets::IconName::Trash)
-                        .tooltip("Delete note")
-                        .on_click(cx.listener(Self::confirm_delete)),
-                ),
+                h_flex()
+                    .gap_1()
+                    .child(mode_tabs)
+                    .child(
+                        Button::new("add-images")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::ImagePlus)
+                            .tooltip("Add images")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.add_images(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("delete-note")
+                            .ghost()
+                            .small()
+                            // Not in the components' `IconName`; see
+                            // `assets.rs`.
+                            .icon(gpui_kit::assets::IconName::Trash)
+                            .tooltip("Delete note")
+                            .on_click(cx.listener(Self::confirm_delete)),
+                    ),
             )
     }
 
@@ -488,6 +552,7 @@ impl NoteEditor {
             Mode::Edit => Textarea::new(&self.body)
                 .appearance(false)
                 .h_full()
+                .on_paste(Self::paste_images(cx.entity().downgrade()))
                 .into_any_element(),
             Mode::Preview if self.preview.trim().is_empty() => div()
                 .text_color(cx.theme().muted_foreground)
@@ -599,6 +664,7 @@ impl Render for NoteEditor {
         let Some(note) = &self.note else {
             return root.child(NoteView);
         };
+        let drop_target = cx.theme().drop_target;
 
         root.child(
             v_flex()
@@ -611,10 +677,12 @@ impl Render for NoteEditor {
                 // The title gets a line of its own, so a narrow pane can't
                 // squeeze it away.
                 .child(
-                    div()
-                        .text_xl()
-                        .font_semibold()
-                        .child(Input::new(&self.title).appearance(false).large()),
+                    div().text_xl().font_semibold().child(
+                        Input::new(&self.title)
+                            .appearance(false)
+                            .large()
+                            .on_paste(Self::paste_images(cx.entity().downgrade())),
+                    ),
                 )
                 .child(self.render_toolbar(note, cx)),
         )
@@ -626,5 +694,10 @@ impl Render for NoteEditor {
                 .py_4()
                 .child(self.render_body(note, cx)),
         )
+        .child(self.gallery.clone())
+        // Files dragged from the file manager can land anywhere on the note.
+        // While they hover, the pane is tinted to show it takes them.
+        .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_target))
+        .on_drop(cx.listener(Self::drop_files))
     }
 }

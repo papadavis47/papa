@@ -7,7 +7,8 @@ use gpui_kit::{App, Context, Entity, ScrollStrategy, Window};
 use papa_core::{NoteDraft, NoteFilter, NoteId, NoteQuery, NoteSummary};
 
 use super::{
-    FocusSearch, NewNote, PapaApp, SEARCH_DELAY, SelectNextNote, SelectPreviousNote, TogglePreview,
+    AddImages, FocusSearch, NewNote, PapaApp, SEARCH_DELAY, SelectNextNote, SelectPreviousNote,
+    TogglePreview,
 };
 use crate::ui::{NoteEditor, NoteEditorEvent, NoteListEvent};
 
@@ -166,6 +167,17 @@ impl PapaApp {
         }
     }
 
+    pub(super) fn add_images(
+        &mut self,
+        _: &AddImages,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, cx| editor.add_images(window, cx));
+        }
+    }
+
     pub(super) fn focus_search(
         &mut self,
         _: &FocusSearch,
@@ -207,13 +219,20 @@ impl PapaApp {
                 // `make_mut` clones the list only if a render still holds it.
                 let notes = Rc::make_mut(&mut self.notes);
                 if let Some(row) = notes.iter_mut().find(|row| row.id == note.id) {
-                    *row = note.summary();
+                    *row = note.summary(row.images);
                 }
             }
             NoteEditorEvent::Deleted(id) => {
                 self.selection.after_removing(*id, &self.note_ids());
                 Rc::make_mut(&mut self.notes).retain(|row| row.id != *id);
                 self.open_selected(window, cx);
+            }
+            // Reload for the row's image count. Adding an image doesn't
+            // change the text, so the note stays in a filtered list.
+            NoteEditorEvent::ImagesChanged(id) => {
+                if self.notes.iter().any(|row| row.id == *id) {
+                    self.refresh_notes(window, cx);
+                }
             }
         }
         cx.notify();

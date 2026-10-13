@@ -5216,7 +5216,9 @@ name = "papa-core"
 version = "0.1.0"
 dependencies = [
  "dirs 7.0.0",
+ "image",
  "jiff",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

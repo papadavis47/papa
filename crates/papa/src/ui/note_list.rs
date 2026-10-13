@@ -251,6 +251,16 @@ fn row(
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .children(dots)
-                .child(div().flex_1().min_w_0().truncate().child(preview)),
+                .child(div().flex_1().min_w_0().truncate().child(preview))
+                .when(note.images > 0, |row| {
+                    row.child(
+                        h_flex()
+                            .flex_none()
+                            .gap_0p5()
+                            .text_xs()
+                            .child(Icon::new(gpui_kit::assets::IconName::Image).xsmall())
+                            .child(note.images.to_string()),
+                    )
+                }),
         )
 }

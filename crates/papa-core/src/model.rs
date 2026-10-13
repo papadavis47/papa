@@ -66,6 +66,10 @@ id_type!(
     /// Identifies a note.
     NoteId
 );
+id_type!(
+    /// Identifies an image attached to a note.
+    ImageId
+);
 
 /// A child the father writes about.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,14 +113,15 @@ pub struct Note {
 }
 
 impl Note {
-    /// The note as the list shows it.
-    pub fn summary(&self) -> NoteSummary {
+    /// The note as the list shows it, with `images` attached.
+    pub fn summary(&self, images: usize) -> NoteSummary {
         NoteSummary {
             id: self.id,
             title: self.title.clone(),
             preview: preview(&self.body),
             children: self.children.clone(),
             labels: self.labels.clone(),
+            images,
             created_at: self.created_at,
         }
     }
@@ -131,6 +136,8 @@ pub struct NoteSummary {
     pub preview: String,
     pub children: Vec<ChildId>,
     pub labels: Vec<LabelId>,
+    /// How many images are attached.
+    pub images: usize,
     pub created_at: Timestamp,
 }
 
@@ -142,6 +149,64 @@ pub struct NoteDraft {
     pub body: String,
     pub children: Vec<ChildId>,
     pub labels: Vec<LabelId>,
+}
+
+/// The image formats Papa reads and stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImageFormat {
+    Jpeg,
+    Png,
+    Gif,
+    Webp,
+}
+
+impl ImageFormat {
+    /// The MIME type, as stored in the vault.
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
+        }
+    }
+
+    pub fn from_mime(mime: &str) -> Option<Self> {
+        [Self::Jpeg, Self::Png, Self::Gif, Self::Webp]
+            .into_iter()
+            .find(|format| format.mime() == mime)
+    }
+}
+
+/// An image's bytes and the format they are in.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EncodedImage {
+    pub format: ImageFormat,
+    pub bytes: Vec<u8>,
+}
+
+/// Bytes would flood the output of `{:?}`, so only their length is shown.
+impl fmt::Debug for EncodedImage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncodedImage")
+            .field("format", &self.format)
+            .field("bytes", &format_args!("<{} bytes>", self.bytes.len()))
+            .finish()
+    }
+}
+
+/// An image attached to a note, as the gallery shows it: its thumbnail, but
+/// not the full-size versions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteImage {
+    pub id: ImageId,
+    pub note_id: NoteId,
+    /// The original's format.
+    pub format: ImageFormat,
+    /// Size as shown, upright.
+    pub width: u32,
+    pub height: u32,
+    pub thumb: EncodedImage,
 }
 
 /// Which notes the list shows, newest first.
@@ -337,6 +402,19 @@ mod tests {
         let terms = SearchTerms::new(" \t ");
         assert!(terms.is_empty());
         assert!(terms.matches("", ""));
+    }
+
+    #[test]
+    fn image_formats_round_trip_through_mime_types() {
+        for format in [
+            ImageFormat::Jpeg,
+            ImageFormat::Png,
+            ImageFormat::Gif,
+            ImageFormat::Webp,
+        ] {
+            assert_eq!(ImageFormat::from_mime(format.mime()), Some(format));
+        }
+        assert_eq!(ImageFormat::from_mime("image/heic"), None);
     }
 
     #[test]

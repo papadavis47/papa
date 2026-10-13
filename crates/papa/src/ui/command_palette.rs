@@ -311,6 +311,7 @@ fn icon(command: PaletteCommand) -> Icon {
             Lucide::Hash.into()
         }
         PaletteCommand::Open(_) => IconName::FileText.into(),
+        PaletteCommand::ToggleVimMode => Lucide::Keyboard.into(),
     }
 }
 
@@ -408,6 +409,7 @@ mod tests {
                 notes,
                 open_note: None,
                 filter: NoteFilter::All,
+                vim_mode: false,
             });
             let palette = host.read(cx).palette.clone();
             palette.update(cx, |palette, cx| palette.open(groups, false, window, cx));

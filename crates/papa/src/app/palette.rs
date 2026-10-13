@@ -6,6 +6,7 @@ use papa_core::{NoteFilter, NoteId, NoteQuery, NoteSummary};
 
 use super::{PapaApp, ToggleCommandPalette};
 use crate::palette::{self, OpenNote, PaletteCommand, PaletteData, PaletteGroup};
+use crate::settings::AppSettings;
 use crate::ui::{CommandPalette, CommandPaletteEvent, SidebarEvent};
 
 impl PapaApp {
@@ -26,6 +27,7 @@ impl PapaApp {
             notes,
             open_note,
             filter: self.selection.filter,
+            vim_mode: AppSettings::get(cx).editor.vim_mode,
         })
     }
 
@@ -95,6 +97,9 @@ impl PapaApp {
                 if let Some(editor) = &self.editor {
                     editor.update(cx, |editor, cx| editor.toggle_label(id, window, cx));
                 }
+            }
+            PaletteCommand::ToggleVimMode => {
+                AppSettings::update(cx, |s| s.editor.vim_mode = !s.editor.vim_mode);
             }
         }
     }

@@ -24,6 +24,8 @@ pub enum PaletteCommand {
     ToggleChild(ChildId),
     /// Add this label to the open note, or remove it.
     ToggleLabel(LabelId),
+    /// Turn the Vim mode setting on or off.
+    ToggleVimMode,
 }
 
 /// The commands that have a keyboard shortcut. `ui::command_palette` maps
@@ -110,6 +112,8 @@ pub struct PaletteData<'a> {
     pub open_note: Option<OpenNote<'a>>,
     /// What the note list shows now.
     pub filter: NoteFilter,
+    /// The Vim mode setting.
+    pub vim_mode: bool,
 }
 
 /// The palette's groups, top to bottom: commands first, the long list of
@@ -166,6 +170,9 @@ fn actions(data: &PaletteData) -> PaletteGroup {
             .keywords(["toggle", "panel"]),
         PaletteItem::new("Switch light and dark", C::Shortcut(S::ToggleTheme))
             .keywords(["theme", "mode", "dark", "light", "toggle"]),
+        PaletteItem::new("Vim mode", C::ToggleVimMode)
+            .keywords(["vi", "modal", "keys", "editor", "toggle"])
+            .checked(data.vim_mode),
         PaletteItem::new("Settings…", C::Shortcut(S::OpenSettings)).keywords([
             "preferences",
             "options",
@@ -301,6 +308,7 @@ mod tests {
             notes,
             open_note: None,
             filter: NoteFilter::All,
+            vim_mode: false,
         }
     }
 

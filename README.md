@@ -14,7 +14,7 @@ A private, local-first journal for fathers. Keep a profile for each of your chil
 - Optional end-to-end encrypted sharing: each child sees **only** the notes shared with them
 - Messages between father and child
 - PDF export
-- Themes, a settings panel (fonts, text size, density) and an optional Vim mode
+- Themes, a settings panel (fonts, text size, density) and an optional Vim mode (Normal, Insert and Visual modes, counts and operators, `:w`)
 - Keyboard first: a ⌘K command palette reaches every command, child, label and note
 - Linux and macOS first, Windows later
 

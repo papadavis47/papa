@@ -5,7 +5,7 @@
 
 A private, local-first journal for fathers. Keep a profile for each of your children, write notes and save photos about them, and, if you choose, share some of those notes with a child, who can read them in the same app, export them to PDF and message you back.
 
-> **Status:** early development, built in public. Phases 0–4 (workspace and CI, app shell, local storage, notes, images) are done; Phase 5 (settings and themes) is in review. See [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** early development, built in public. Phases 0–5 (workspace and CI, app shell, local storage, notes, images, settings and themes) are done; Phase 6 (command palette and polish) is in review. See [PLAN.md](PLAN.md) for the roadmap.
 
 ## Planned features
 
@@ -15,6 +15,7 @@ A private, local-first journal for fathers. Keep a profile for each of your chil
 - Messages between father and child
 - PDF export
 - Themes, a settings panel (fonts, text size, density) and an optional Vim mode
+- Keyboard first: a ⌘K command palette reaches every command, child, label and note
 - Linux and macOS first, Windows later
 
 ## Built with

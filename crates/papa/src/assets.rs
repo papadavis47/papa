@@ -10,7 +10,20 @@ use std::borrow::Cow;
 use gpui_kit::assets::Assets;
 use gpui_kit::{AssetSource, SharedString};
 
-gpui_kit::assets::icon_assets!(ExtraIcons, [Image, ImagePlus, Trash]);
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        Hash,
+        Image,
+        ImagePlus,
+        List,
+        LogOut,
+        NotebookPen,
+        SearchX,
+        Trash,
+        UserPlus
+    ]
+);
 
 /// The components' icons plus [`ExtraIcons`].
 pub struct PapaAssets;

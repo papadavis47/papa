@@ -18,9 +18,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
-    ExternalPaths, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, WeakEntity, Window, div, relative, rgb,
+    Animation, AnimationExt as _, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem,
+    Context, Entity, EventEmitter, ExternalPaths, FocusHandle, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Task,
+    WeakEntity, Window, div, ease_out_quint, relative, rgb,
 };
 use jiff::tz::TimeZone;
 use papa_core::settings::{Density, NoteMode};
@@ -28,6 +29,7 @@ use papa_core::{Child, ChildId, Label, LabelId, Note, NoteId, Store};
 
 use super::gallery::{Gallery, GalleryEvent};
 use super::{NoteView, dates, dialogs, sentence};
+use crate::app::NOTE_EDITOR_CONTEXT;
 use crate::settings::AppSettings;
 use crate::theme;
 
@@ -41,6 +43,10 @@ pub enum NoteEditorEvent {
     /// An image was added to or removed from the note.
     ImagesChanged(NoteId),
 }
+
+/// How long a note takes to fade in when it opens. Short enough that
+/// moving through the list with ↑/↓ never waits for it.
+const NOTE_FADE: Duration = Duration::from_millis(140);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -125,6 +131,11 @@ impl NoteEditor {
         self.note.as_ref().map(|note| note.id)
     }
 
+    /// The open note as last stored; its children and labels are current.
+    pub fn note(&self) -> Option<&Note> {
+        self.note.as_ref()
+    }
+
     pub fn gallery(&self) -> &Entity<Gallery> {
         &self.gallery
     }
@@ -186,6 +197,17 @@ impl NoteEditor {
 
     pub fn focus_title(&self, window: &mut Window, cx: &mut App) {
         self.title.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// Takes keyboard focus: the text while editing, the preview otherwise.
+    pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.note.is_none() {
+            return;
+        }
+        match self.mode {
+            Mode::Edit => self.edit_body(window, cx),
+            Mode::Preview => self.focus_handle.focus(window, cx),
+        }
     }
 
     /// Switches between editing the Markdown and reading it rendered.
@@ -378,7 +400,8 @@ impl NoteEditor {
 
     // --- Children and labels ---
 
-    fn toggle_child(&mut self, id: ChildId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Assigns the note to the child, or unassigns it.
+    pub fn toggle_child(&mut self, id: ChildId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(note) = &mut self.note else { return };
         toggle(&mut note.children, id);
         let (note_id, children) = (note.id, note.children.clone());
@@ -390,7 +413,8 @@ impl NoteEditor {
         );
     }
 
-    fn toggle_label(&mut self, id: LabelId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Adds the label to the note, or removes it.
+    pub fn toggle_label(&mut self, id: LabelId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(note) = &mut self.note else { return };
         toggle(&mut note.labels, id);
         let (note_id, labels) = (note.id, note.labels.clone());
@@ -435,7 +459,8 @@ impl NoteEditor {
 
     // --- Deleting ---
 
-    fn confirm_delete(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+    /// Asks before deleting the open note.
+    pub fn confirm_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(note) = &self.note else { return };
         let id = note.id;
         let title = self.title.read(cx).value();
@@ -550,7 +575,9 @@ impl NoteEditor {
                             // `assets.rs`.
                             .icon(gpui_kit::assets::IconName::Trash)
                             .tooltip("Delete note")
-                            .on_click(cx.listener(Self::confirm_delete)),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.confirm_delete(window, cx)),
+                            ),
                     ),
             )
     }
@@ -682,51 +709,67 @@ fn hint(text: &'static str, cx: &App) -> impl IntoElement {
 
 impl Render for NoteEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let root = v_flex().size_full().track_focus(&self.focus_handle);
+        let root = v_flex()
+            .size_full()
+            .key_context(NOTE_EDITOR_CONTEXT)
+            .track_focus(&self.focus_handle);
         let Some(note) = &self.note else {
-            return root.child(NoteView);
+            return root.child(NoteView::new(true));
         };
         let drop_target = cx.theme().drop_target;
         let compact = AppSettings::get(cx).appearance.density == Density::Compact;
 
+        let content = v_flex()
+            .size_full()
+            .child(
+                v_flex()
+                    .gap_2()
+                    .map(|header| {
+                        if compact {
+                            header.px_4().pt_2().pb_2()
+                        } else {
+                            header.px_6().pt_4().pb_3()
+                        }
+                    })
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    // The title gets a line of its own, so a narrow pane can't
+                    // squeeze it away.
+                    .child(
+                        div().text_xl().font_semibold().child(
+                            Input::new(&self.title)
+                                .appearance(false)
+                                .large()
+                                .on_paste(Self::paste_images(cx.entity().downgrade())),
+                        ),
+                    )
+                    .child(self.render_toolbar(note, cx)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .map(|body| {
+                        if compact {
+                            body.px_4().py_2()
+                        } else {
+                            body.px_6().py_4()
+                        }
+                    })
+                    .child(self.render_body(note, cx)),
+            )
+            .child(self.gallery.clone());
+
         root.child(
-            v_flex()
-                .gap_2()
-                .map(|header| {
-                    if compact {
-                        header.px_4().pt_2().pb_2()
-                    } else {
-                        header.px_6().pt_4().pb_3()
-                    }
-                })
-                .border_b_1()
-                .border_color(cx.theme().border)
-                // The title gets a line of its own, so a narrow pane can't
-                // squeeze it away.
-                .child(
-                    div().text_xl().font_semibold().child(
-                        Input::new(&self.title)
-                            .appearance(false)
-                            .large()
-                            .on_paste(Self::paste_images(cx.entity().downgrade())),
-                    ),
-                )
-                .child(self.render_toolbar(note, cx)),
+            // Each note fades in as it opens. The id names the note, so
+            // switching to another starts the animation again, while
+            // switching between Edit and Preview doesn't.
+            content.with_animation(
+                SharedString::from(format!("note-{}", note.id)),
+                Animation::new(NOTE_FADE).with_easing(ease_out_quint()),
+                |content, t| content.opacity(t),
+            ),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .map(|body| {
-                    if compact {
-                        body.px_4().py_2()
-                    } else {
-                        body.px_6().py_4()
-                    }
-                })
-                .child(self.render_body(note, cx)),
-        )
-        .child(self.gallery.clone())
         // Files dragged from the file manager can land anywhere on the note.
         // While they hover, the pane is tinted to show it takes them.
         .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_target))

@@ -325,6 +325,11 @@ impl SettingsPanel {
             }),
         )
         .default_value("comfortable");
+        let reduce_motion = SettingField::switch(
+            get(|s| s.appearance.reduce_motion),
+            set(|s, value: bool| s.appearance.reduce_motion = value),
+        )
+        .default_value(false);
         let text_size = SettingField::number_input(
             NumberFieldOptions {
                 min: f64::from(*defaults::TEXT_SIZES.start()),
@@ -399,11 +404,18 @@ impl SettingsPanel {
                     ),
             )
             .group(
-                SettingGroup::new().title("Layout").item(
-                    SettingItem::new("Density", density)
-                        .description("Compact shows one line per note in the list.")
-                        .keywords(["spacing", "compact", "comfortable"]),
-                ),
+                SettingGroup::new()
+                    .title("Layout")
+                    .item(
+                        SettingItem::new("Density", density)
+                            .description("Compact shows one line per note in the list.")
+                            .keywords(["spacing", "compact", "comfortable"]),
+                    )
+                    .item(
+                        SettingItem::new("Reduce motion", reduce_motion)
+                            .description("Show notes and panels at once, without animating them.")
+                            .keywords(["animation", "accessibility", "fade"]),
+                    ),
             )
     }
 

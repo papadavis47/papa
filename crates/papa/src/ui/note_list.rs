@@ -12,13 +12,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
     SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle,
-    Window, div, rems, rgb, uniform_list,
+    Window, div, rems, rgb, transparent_black, uniform_list,
 };
 use jiff::Zoned;
 use papa_core::settings::Density;
 use papa_core::{Child, NoteId, NoteSummary};
 
 use super::dates;
+use super::empty_state::EmptyState;
 use crate::app::{APP_CONTEXT, NewNote};
 
 /// Key context around the search box. Arrow keys bound to `"NoteSearch >
@@ -30,6 +31,18 @@ pub const NOTE_SEARCH_CONTEXT: &str = "NoteSearch";
 pub enum NoteListEvent {
     Select(NoteId),
     NewNote,
+    ClearSearch,
+}
+
+/// What the list shows when it has no notes: why, and what to do next.
+pub struct EmptyNotes {
+    /// Also keys the fade-in, so it plays when the reason changes.
+    pub id: &'static str,
+    pub icon: Icon,
+    pub title: SharedString,
+    pub description: Option<SharedString>,
+    /// A button, and what it asks for.
+    pub action: Option<(SharedString, NoteListEvent)>,
 }
 
 type OnEvent = Rc<dyn Fn(&NoteListEvent, &mut Window, &mut App)>;
@@ -50,11 +63,13 @@ pub struct NoteList {
     search: Entity<InputState>,
     scroll: UniformListScrollHandle,
     /// Shown instead of the list when it's empty.
-    empty_message: SharedString,
+    empty: EmptyNotes,
     /// Compact rows are one line: no preview of the text.
     density: Density,
     /// `false` until the vault is open.
     enabled: bool,
+    /// The list has keyboard focus: the selected row gets a focus ring.
+    focused: bool,
     on_event: OnEvent,
 }
 
@@ -67,7 +82,7 @@ impl NoteList {
         selected: Option<NoteId>,
         search: Entity<InputState>,
         scroll: UniformListScrollHandle,
-        empty_message: impl Into<SharedString>,
+        empty: EmptyNotes,
         density: Density,
         enabled: bool,
         on_event: impl Fn(&NoteListEvent, &mut Window, &mut App) + 'static,
@@ -79,11 +94,18 @@ impl NoteList {
             selected,
             search,
             scroll,
-            empty_message: empty_message.into(),
+            empty,
             density,
             enabled,
+            focused: false,
             on_event: Rc::new(on_event),
         }
+    }
+
+    /// Draws the focus ring, for when the list has keyboard focus.
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
     }
 }
 
@@ -127,15 +149,10 @@ impl RenderOnce for NoteList {
         );
 
         let body = if self.notes.is_empty() {
-            v_flex()
+            div()
                 .flex_1()
-                .items_center()
-                .justify_center()
-                .px_6()
-                .text_sm()
-                .text_center()
-                .text_color(cx.theme().muted_foreground)
-                .child(self.empty_message)
+                .min_h_0()
+                .child(empty_notes(self.empty, &self.on_event))
                 .into_any_element()
         } else {
             let notes = self.notes.clone();
@@ -146,8 +163,12 @@ impl RenderOnce for NoteList {
                         let note = &notes[ix];
                         let on_event = self.on_event.clone();
                         let select = NoteListEvent::Select(note.id);
-                        let selected = self.selected == Some(note.id);
-                        row(note, selected, self.density, &self.children, &now, cx)
+                        let highlight = match (self.selected == Some(note.id), self.focused) {
+                            (false, _) => Highlight::None,
+                            (true, false) => Highlight::Selected,
+                            (true, true) => Highlight::Focused,
+                        };
+                        row(note, highlight, self.density, &self.children, &now, cx)
                             .on_click(move |_, window, cx| on_event(&select, window, cx))
                     })
                     .collect::<Vec<_>>()
@@ -181,6 +202,21 @@ impl RenderOnce for NoteList {
     }
 }
 
+fn empty_notes(empty: EmptyNotes, on_event: &OnEvent) -> EmptyState {
+    let mut state = EmptyState::new(empty.id, empty.icon, empty.title);
+    if let Some(description) = empty.description {
+        state = state.description(description);
+    }
+    if let Some((label, event)) = empty.action {
+        let on_event = on_event.clone();
+        state = state.button(label, move |_, window, cx| on_event(&event, window, cx));
+        if event == NoteListEvent::NewNote {
+            state = state.shortcut(NewNote);
+        }
+    }
+    state
+}
+
 /// One note: title and date, then the children's colours and the start of
 /// the text. Compact rows leave out the second line, and show the children's
 /// colours next to the title instead. Every row has the same height, as
@@ -188,9 +224,19 @@ impl RenderOnce for NoteList {
 ///
 /// A plain `div` rather than gpui-kit's `ListItem`, whose inner wrapper
 /// can't shrink below its text and so pushed the date out of view.
+/// How a row stands out from the others.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Highlight {
+    None,
+    /// The open note.
+    Selected,
+    /// The open note, while the list has focus: ↑/↓ move from here.
+    Focused,
+}
+
 fn row(
     note: &NoteSummary,
-    selected: bool,
+    highlight: Highlight,
     density: Density,
     children: &[Child],
     now: &Zoned,
@@ -235,13 +281,14 @@ fn row(
         .px_3()
         .map(|row| if compact { row.py_1() } else { row.py_1p5() })
         .rounded(cx.theme().radius)
+        // Every row has the border, so the focus ring doesn't move the text.
+        .border_1()
+        .border_color(transparent_black())
         .cursor_pointer()
-        .map(|row| {
-            if selected {
-                row.bg(cx.theme().list_active)
-            } else {
-                row.hover(|row| row.bg(list_hover))
-            }
+        .map(|row| match highlight {
+            Highlight::None => row.hover(|row| row.bg(list_hover)),
+            Highlight::Selected => row.bg(cx.theme().list_active),
+            Highlight::Focused => row.bg(cx.theme().list_active).border_color(cx.theme().ring),
         });
     let date = div()
         .flex_none()

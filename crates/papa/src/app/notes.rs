@@ -84,7 +84,7 @@ impl PapaApp {
         }
     }
 
-    fn select_note(&mut self, id: NoteId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn select_note(&mut self, id: NoteId, window: &mut Window, cx: &mut Context<Self>) {
         self.selection.note = Some(id);
         self.open_selected(window, cx);
         cx.notify();
@@ -201,6 +201,13 @@ impl PapaApp {
                 self.select_note(id, window, cx);
             }
             NoteListEvent::NewNote => self.new_note(&NewNote, window, cx),
+            NoteListEvent::ClearSearch => {
+                // `set_value` emits no change event, so reload by hand.
+                self.search
+                    .update(cx, |search, cx| search.set_value("", window, cx));
+                self.note_list_focus.focus(window, cx);
+                self.refresh_notes(window, cx);
+            }
         }
     }
 

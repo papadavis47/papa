@@ -1,13 +1,15 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    Icon, IconName,
+    ActiveTheme as _, Icon, IconName,
     menu::{PopupMenu, PopupMenuItem},
     sidebar::{
         Sidebar, SidebarCollapsible, SidebarGroup, SidebarItem as _, SidebarMenu, SidebarMenuItem,
     },
 };
-use gpui_kit::{App, ClickEvent, IntoElement, RenderOnce, Styled as _, Window, rgb};
+use gpui_kit::{
+    App, ClickEvent, Hsla, IntoElement, RenderOnce, Styled as _, Window, rgb, transparent_black,
+};
 use papa_core::{Child, ChildId, Label, LabelId, NoteFilter};
 
 use crate::app::OpenSettings;
@@ -41,6 +43,8 @@ pub struct AppSidebar {
     selected: NoteFilter,
     /// `false` until the vault is open, so nothing can be added too early.
     enabled: bool,
+    /// The sidebar has keyboard focus: the selected entry gets a focus ring.
+    focused: bool,
     /// Shared by every item's click handler and context menu.
     on_event: OnEvent,
 }
@@ -58,9 +62,25 @@ impl AppSidebar {
             labels: labels.to_vec(),
             selected,
             enabled,
+            focused: false,
             on_event: Rc::new(on_event),
         }
     }
+
+    /// Draws the focus ring, for when the sidebar has keyboard focus.
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+}
+
+/// An entry that filters the notes, highlighted when it's the selected one.
+/// Every entry has the border, so the focus ring doesn't move the text.
+/// `ring` is the colour of the focus ring, or `None` while the sidebar
+/// doesn't have focus.
+fn filter_item(item: SidebarMenuItem, active: bool, ring: Option<Hsla>) -> SidebarMenuItem {
+    let border = ring.filter(|_| active).unwrap_or(transparent_black());
+    item.active(active).border_1().border_color(border)
 }
 
 /// A context menu with "Edit…"/"Rename…" and "Delete…" entries that send
@@ -94,10 +114,12 @@ impl RenderOnce for AppSidebar {
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| on_event(&event, window, cx)
         };
 
+        let ring = self.focused.then_some(cx.theme().ring);
         let children = self.children.into_iter().map(|child| {
-            SidebarMenuItem::new(child.name)
-                .icon(Icon::new(IconName::CircleUser).text_color(rgb(child.color)))
-                .active(self.selected == NoteFilter::Child(child.id))
+            let item = SidebarMenuItem::new(child.name)
+                .icon(Icon::new(IconName::CircleUser).text_color(rgb(child.color)));
+            let active = self.selected == NoteFilter::Child(child.id);
+            filter_item(item, active, ring)
                 .on_click(send(SidebarEvent::Select(NoteFilter::Child(child.id))))
                 .context_menu(edit_menu(
                     &on_event,
@@ -113,8 +135,8 @@ impl RenderOnce for AppSidebar {
 
         let labels = self.labels.into_iter().map(|label| {
             let filter = NoteFilter::Label(label.id);
-            SidebarMenuItem::new(format!("# {}", label.name))
-                .active(self.selected == filter)
+            let item = SidebarMenuItem::new(format!("# {}", label.name));
+            filter_item(item, self.selected == filter, ring)
                 .on_click(send(SidebarEvent::Select(filter)))
                 .context_menu(edit_menu(
                     &on_event,
@@ -130,10 +152,12 @@ impl RenderOnce for AppSidebar {
 
         // `Sidebar` takes groups as children; a lone entry goes in the header.
         let all_notes = SidebarMenu::new().child(
-            SidebarMenuItem::new("All notes")
-                .icon(IconName::BookOpen)
-                .active(self.selected == NoteFilter::All)
-                .on_click(send(SidebarEvent::Select(NoteFilter::All))),
+            filter_item(
+                SidebarMenuItem::new("All notes").icon(IconName::BookOpen),
+                self.selected == NoteFilter::All,
+                ring,
+            )
+            .on_click(send(SidebarEvent::Select(NoteFilter::All))),
         );
 
         // Messages arrive in a later phase. Settings dispatches the same

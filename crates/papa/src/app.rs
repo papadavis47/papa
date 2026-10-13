@@ -5,6 +5,7 @@
 //! Rust allows several `impl` blocks for one type, in different modules.
 
 mod notes;
+mod palette;
 mod sidebar;
 
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use gpui_kit::component::{
-    ActiveTheme as _, WindowExt as _, h_resizable,
+    ActiveTheme as _, Icon, IconName, WindowExt as _, h_resizable,
     input::{InputEvent, InputState},
     notification::Notification,
     resizable_panel,
@@ -31,7 +32,8 @@ use crate::settings::AppSettings;
 use crate::state::Selection;
 use crate::ui::lightbox::{CloseLightbox, LIGHTBOX_CONTEXT, NextImage, PreviousImage};
 use crate::ui::{
-    AppSidebar, AppTitleBar, NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteView, sentence,
+    AppSidebar, AppTitleBar, COMMAND_PALETTE_CONTEXT, CommandPalette, EmptyNotes,
+    NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteListEvent, NoteView, sentence,
 };
 use crate::{settings_window, theme};
 
@@ -62,6 +64,14 @@ gpui_kit::actions!(
         AddImages,
         /// Open the Settings window.
         OpenSettings,
+        /// Open the command palette, or close it if it's open.
+        ToggleCommandPalette,
+        /// Move keyboard focus to the sidebar.
+        FocusSidebar,
+        /// Move keyboard focus to the note list.
+        FocusNoteList,
+        /// Move keyboard focus to the open note.
+        FocusEditor,
     ]
 );
 
@@ -76,6 +86,8 @@ pub const APP_CONTEXT: &str = "PapaApp";
 pub const SIDEBAR_CONTEXT: &str = "Sidebar";
 /// Key context on the note list pane, search box included.
 pub const NOTE_LIST_CONTEXT: &str = "NoteList";
+/// Key context on the note editor, title, text and preview included.
+pub const NOTE_EDITOR_CONTEXT: &str = "NoteEditor";
 
 /// Registers keybindings and app-wide action handlers. Call once at startup,
 /// after `gpui_kit::init`.
@@ -85,6 +97,10 @@ pub fn init(cx: &mut App) {
     // later of two equally specific bindings wins, so here the arrows move
     // through the notes while the search keeps focus.
     let in_search = format!("{NOTE_SEARCH_CONTEXT} > Input");
+    // Text fields bind ⌘F to a search of their own text. The palette's
+    // search box has nothing to search, so there ⌘F does what it does
+    // elsewhere, and the palette shows ⌘F next to "Search notes".
+    let in_palette = format!("{COMMAND_PALETTE_CONTEXT} > Input");
     cx.bind_keys([
         // `secondary` is Cmd on macOS and Ctrl elsewhere.
         KeyBinding::new("secondary-q", Quit, None),
@@ -96,7 +112,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-n", NewNote, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-e", TogglePreview, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-f", FocusSearch, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-f", FocusSearch, Some(&in_palette)),
         KeyBinding::new("secondary-shift-o", AddImages, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-k", ToggleCommandPalette, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-1", FocusSidebar, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-2", FocusNoteList, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-3", FocusEditor, Some(APP_CONTEXT)),
         KeyBinding::new("escape", CloseLightbox, Some(LIGHTBOX_CONTEXT)),
         KeyBinding::new("right", NextImage, Some(LIGHTBOX_CONTEXT)),
         KeyBinding::new("left", PreviousImage, Some(LIGHTBOX_CONTEXT)),
@@ -106,6 +127,19 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("up", SelectPreviousNote, Some(NOTE_LIST_CONTEXT)),
         KeyBinding::new("down", SelectNextNote, Some(&in_search)),
         KeyBinding::new("up", SelectPreviousNote, Some(&in_search)),
+        // Moving between the panes, left to right: sidebar, list, note. In
+        // the search box, ←/→ and Enter stay the text field's: its own
+        // bindings are more specific than these. Enter there opens the
+        // note through the field's `PressEnter` event instead.
+        KeyBinding::new("right", FocusNoteList, Some(SIDEBAR_CONTEXT)),
+        KeyBinding::new("enter", FocusNoteList, Some(SIDEBAR_CONTEXT)),
+        KeyBinding::new("left", FocusSidebar, Some(NOTE_LIST_CONTEXT)),
+        KeyBinding::new("right", FocusEditor, Some(NOTE_LIST_CONTEXT)),
+        KeyBinding::new("enter", FocusEditor, Some(NOTE_LIST_CONTEXT)),
+        // A text field handles Esc first (closing its menu, say) and lets
+        // it through when it has nothing to do with it. GPUI then tries the
+        // next binding for the key: this one.
+        KeyBinding::new("escape", FocusNoteList, Some(NOTE_EDITOR_CONTEXT)),
     ]);
 
     // App-level handlers: quitting, the theme and the Settings window are
@@ -184,6 +218,8 @@ pub struct PapaApp {
     note_scroll: UniformListScrollHandle,
     /// Created once the vault is open: it needs the store.
     editor: Option<Entity<NoteEditor>>,
+    /// ⌘K. Drawn over everything else while open.
+    palette: Entity<CommandPalette>,
     sidebar_visible: bool,
     /// Clicking an element that tracks a focus handle focuses it. This one is
     /// on the root, so a click anywhere outside the panes still leaves focus
@@ -213,16 +249,19 @@ impl PapaApp {
                 .placeholder("Search")
                 .clean_on_escape()
         });
+        let palette = cx.new(|cx| CommandPalette::new(window, cx));
         let subscriptions = vec![
             cx.subscribe_in(
                 &search,
                 window,
-                |this, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::Change = event {
-                        this.search_changed(window, cx);
-                    }
+                |this, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => this.search_changed(window, cx),
+                    // Search, pick a note with ↑/↓, then Enter to read it.
+                    InputEvent::PressEnter { .. } => this.focus_editor(&FocusEditor, window, cx),
+                    _ => {}
                 },
             ),
+            cx.subscribe_in(&palette, window, Self::on_palette_event),
             // A closing dialog hands focus back to whatever had it before,
             // and that may be gone (a right-click menu, say). With nothing
             // focused, no key context matches and the shortcuts stop working,
@@ -273,6 +312,7 @@ impl PapaApp {
             search_task: None,
             note_scroll: UniformListScrollHandle::new(),
             editor: None,
+            palette,
             sidebar_visible: true,
             focus_handle: cx.focus_handle(),
             sidebar_focus,
@@ -356,10 +396,35 @@ impl PapaApp {
         self.sidebar_visible = !self.sidebar_visible;
         cx.notify();
     }
+
+    // --- Moving focus between the panes. Focusing a pane is what makes its
+    // key bindings apply, and what draws its focus ring. ---
+
+    fn focus_sidebar(&mut self, _: &FocusSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        // A hidden sidebar can't take focus: show it.
+        self.sidebar_visible = true;
+        self.sidebar_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn focus_note_list(&mut self, _: &FocusNoteList, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_list_focus.focus(window, cx);
+    }
+
+    fn focus_editor(&mut self, _: &FocusEditor, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, cx| editor.focus(window, cx));
+        }
+    }
 }
 
 impl Render for PapaApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // GPUI redraws the window whenever focus moves, so these are
+        // always current. `contains_focused`: the search box counts as
+        // the list, since ↑/↓ move through the notes from there too.
+        let sidebar_focused = self.sidebar_focus.contains_focused(window, cx);
+        let note_list_focused = self.note_list_focus.contains_focused(window, cx);
         let status: SharedString = match &self.vault {
             Vault::Opening => "Opening vault…".into(),
             Vault::Open { path, .. } => paths::display(path).into(),
@@ -367,7 +432,7 @@ impl Render for PapaApp {
         };
         let editor = match &self.editor {
             Some(editor) => editor.clone().into_any_element(),
-            None => NoteView.into_any_element(),
+            None => NoteView::new(false).into_any_element(),
         };
         // Last child, so it's drawn over the panes. Renders nothing while
         // closed.
@@ -384,6 +449,10 @@ impl Render for PapaApp {
             .on_action(cx.listener(Self::toggle_preview))
             .on_action(cx.listener(Self::focus_search))
             .on_action(cx.listener(Self::add_images))
+            .on_action(cx.listener(Self::toggle_command_palette))
+            .on_action(cx.listener(Self::focus_sidebar))
+            .on_action(cx.listener(Self::focus_note_list))
+            .on_action(cx.listener(Self::focus_editor))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -404,13 +473,16 @@ impl Render for PapaApp {
                                         .track_focus(&self.sidebar_focus)
                                         .on_action(cx.listener(Self::select_next_filter))
                                         .on_action(cx.listener(Self::select_previous_filter))
-                                        .child(AppSidebar::new(
-                                            &self.children,
-                                            &self.labels,
-                                            self.selection.filter,
-                                            self.is_open(),
-                                            cx.listener(Self::on_sidebar_event),
-                                        )),
+                                        .child(
+                                            AppSidebar::new(
+                                                &self.children,
+                                                &self.labels,
+                                                self.selection.filter,
+                                                self.is_open(),
+                                                cx.listener(Self::on_sidebar_event),
+                                            )
+                                            .focused(sidebar_focused),
+                                        ),
                                 ),
                         )
                         .child(
@@ -425,18 +497,21 @@ impl Render for PapaApp {
                                         .track_focus(&self.note_list_focus)
                                         .on_action(cx.listener(Self::select_next_note))
                                         .on_action(cx.listener(Self::select_previous_note))
-                                        .child(NoteList::new(
-                                            self.list_heading(),
-                                            self.notes.clone(),
-                                            self.children.clone(),
-                                            self.selection.note,
-                                            self.search.clone(),
-                                            self.note_scroll.clone(),
-                                            self.empty_message(cx),
-                                            AppSettings::get(cx).appearance.density,
-                                            self.is_open(),
-                                            cx.listener(Self::on_note_list_event),
-                                        )),
+                                        .child(
+                                            NoteList::new(
+                                                self.list_heading(),
+                                                self.notes.clone(),
+                                                self.children.clone(),
+                                                self.selection.note,
+                                                self.search.clone(),
+                                                self.note_scroll.clone(),
+                                                self.empty_notes(cx),
+                                                AppSettings::get(cx).appearance.density,
+                                                self.is_open(),
+                                                cx.listener(Self::on_note_list_event),
+                                            )
+                                            .focused(note_list_focused),
+                                        ),
                                 ),
                         )
                         .child(resizable_panel().child(editor)),
@@ -448,6 +523,7 @@ impl Render for PapaApp {
                     .right(cx.theme().theme_name().clone()),
             )
             .children(lightbox)
+            .child(self.palette.clone())
     }
 }
 
@@ -465,25 +541,84 @@ impl PapaApp {
         }
     }
 
-    /// Why the note list is empty.
-    fn empty_message(&self, cx: &App) -> SharedString {
+    /// Why the note list is empty, and what to do about it.
+    fn empty_notes(&self, cx: &App) -> EmptyNotes {
+        use gpui_kit::assets::IconName as Lucide;
+
+        let empty = |id, icon: Icon, title: SharedString| EmptyNotes {
+            id,
+            icon,
+            title,
+            description: None,
+            action: None,
+        };
+        let new_note =
+            |label: &str| Some((SharedString::from(label.to_owned()), NoteListEvent::NewNote));
         match self.vault {
-            Vault::Opening => return "Opening your vault…".into(),
-            Vault::Failed => return "Your vault couldn't be opened.".into(),
+            Vault::Opening => {
+                return empty(
+                    "opening",
+                    IconName::BookOpen.into(),
+                    "Opening your vault…".into(),
+                );
+            }
+            Vault::Failed => {
+                return EmptyNotes {
+                    description: Some("The message in the corner says why.".into()),
+                    ..empty(
+                        "failed",
+                        IconName::CircleAlert.into(),
+                        "Your vault couldn't be opened".into(),
+                    )
+                };
+            }
             Vault::Open { .. } => {}
         }
         let search = self.search.read(cx).value();
         if !search.trim().is_empty() {
-            return format!("No notes match “{}”.", search.trim()).into();
+            return EmptyNotes {
+                description: Some(format!("No note here mentions “{}”.", search.trim()).into()),
+                action: Some(("Clear search".into(), NoteListEvent::ClearSearch)),
+                ..empty("no-match", Lucide::SearchX.into(), "No matches".into())
+            };
         }
         match self.selection.filter {
-            NoteFilter::All => "No notes yet. Click + to write one.".into(),
-            NoteFilter::Child(id) => self.child(id).map_or("".into(), |child| {
-                format!("No notes about {} yet.", child.name).into()
-            }),
-            NoteFilter::Label(id) => self.label(id).map_or("".into(), |label| {
-                format!("No notes labelled #{} yet.", label.name).into()
-            }),
+            NoteFilter::All => EmptyNotes {
+                description: Some("Write down a moment worth remembering.".into()),
+                action: new_note("New note"),
+                ..empty(
+                    "no-notes",
+                    Lucide::NotebookPen.into(),
+                    "No notes yet".into(),
+                )
+            },
+            NoteFilter::Child(id) => {
+                let name = self.child(id).map_or("", |child| child.name.as_str());
+                EmptyNotes {
+                    description: Some(format!("Notes you write about {name} gather here.").into()),
+                    action: new_note(&format!("New note about {name}")),
+                    ..empty(
+                        "no-child-notes",
+                        IconName::CircleUser.into(),
+                        format!("Nothing about {name} yet").into(),
+                    )
+                }
+            }
+            NoteFilter::Label(id) => {
+                let name = self.label(id).map_or("", |label| label.name.as_str());
+                EmptyNotes {
+                    description: Some(
+                        "Add the label to a note with the + next to its date, or write a new one."
+                            .into(),
+                    ),
+                    action: new_note("New note"),
+                    ..empty(
+                        "no-label-notes",
+                        Lucide::Hash.into(),
+                        format!("Nothing labelled #{name}").into(),
+                    )
+                }
+            }
         }
     }
 }

@@ -117,6 +117,10 @@ pub fn apply(cx: &mut App) {
         theme.font_family = ui_font;
         theme.font_size = px(appearance.text_size);
     });
+    // Not part of the theme, but of how the app looks. Every animation
+    // made with `with_animation`, gpui-kit's included, checks this switch
+    // and draws its last frame straight away when it's on.
+    cx.set_reduce_motion(appearance.reduce_motion);
 }
 
 /// The registered theme called `name`, if it is for `mode`; otherwise

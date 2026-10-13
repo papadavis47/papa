@@ -1,4 +1,5 @@
-//! The father's preferences: theme, fonts, text size, editor behaviour.
+//! The father's preferences: theme, fonts, text size, editor behaviour,
+//! PDF export.
 //!
 //! They live in `settings.json` in the config folder ([`paths::settings_path`]),
 //! apart from the vault. The window can then look right before the vault
@@ -45,6 +46,7 @@ pub const DEFAULT_AUTOSAVE_DELAY: u64 = 500;
 pub struct Settings {
     pub appearance: Appearance,
     pub editor: Editor,
+    pub export: Export,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -136,6 +138,23 @@ pub enum NoteMode {
     #[default]
     Preview,
     Edit,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Export {
+    /// The paper exported PDFs are laid out for.
+    pub paper: PaperSize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaperSize {
+    /// 210 × 297 mm, the international standard.
+    #[default]
+    A4,
+    /// 8.5 × 11 in, used in North America.
+    Letter,
 }
 
 impl Settings {
@@ -261,6 +280,7 @@ mod tests {
         settings.appearance.reduce_motion = true;
         settings.editor.open_notes_in = NoteMode::Edit;
         settings.editor.vim_mode = true;
+        settings.export.paper = PaperSize::Letter;
 
         settings.save(&path).unwrap();
 

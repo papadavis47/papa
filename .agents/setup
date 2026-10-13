@@ -29,6 +29,8 @@ apt_packages=(
   # Driving the app on the orb Desktop (Wayland): screenshots and keystrokes.
   grim
   wtype
+  # Checking exported PDFs: page count and size, text, pages as images.
+  poppler-utils
 )
 
 install_apt_packages() {

@@ -20,7 +20,7 @@ impl PapaApp {
         }
     }
 
-    fn note_ids(&self) -> Vec<NoteId> {
+    pub(super) fn note_ids(&self) -> Vec<NoteId> {
         self.notes.iter().map(|note| note.id).collect()
     }
 

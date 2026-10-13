@@ -13,6 +13,8 @@ use gpui_kit::{AssetSource, SharedString};
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [
+        BookDown,
+        FileDown,
         Hash,
         Image,
         ImagePlus,

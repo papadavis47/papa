@@ -40,6 +40,8 @@ pub enum Shortcut {
     FocusSidebar,
     FocusNoteList,
     FocusEditor,
+    ExportNote,
+    ExportNotes,
     ToggleSidebar,
     ToggleTheme,
     OpenSettings,
@@ -114,6 +116,9 @@ pub struct PaletteData<'a> {
     pub filter: NoteFilter,
     /// The Vim mode setting.
     pub vim_mode: bool,
+    /// What exporting the list makes ("Emma’s book", "3 notes"), or `None`
+    /// when the list is empty.
+    pub list_export: Option<&'a str>,
 }
 
 /// The palette's groups, top to bottom: commands first, the long list of
@@ -150,6 +155,15 @@ fn actions(data: &PaletteData) -> PaletteGroup {
         PaletteItem::new("Add images…", C::Shortcut(S::AddImages))
             .keywords(["photo", "picture", "attach"])
             .enabled(note),
+        PaletteItem::new("Export note to PDF…", C::Shortcut(S::ExportNote))
+            .keywords(["pdf", "print", "save", "share"])
+            .enabled(note),
+        PaletteItem::new(
+            format!("Export {} to PDF…", data.list_export.unwrap_or("the list")),
+            C::Shortcut(S::ExportNotes),
+        )
+        .keywords(["pdf", "print", "book", "save", "all"])
+        .enabled(open && data.list_export.is_some()),
         PaletteItem::new("Delete note…", C::DeleteNote)
             .keywords(["remove", "trash"])
             .enabled(note),
@@ -309,6 +323,7 @@ mod tests {
             open_note: None,
             filter: NoteFilter::All,
             vim_mode: false,
+            list_export: Some("2 notes"),
         }
     }
 

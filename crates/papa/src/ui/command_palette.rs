@@ -276,6 +276,8 @@ fn action(shortcut: Shortcut) -> Box<dyn Action> {
         Shortcut::FocusSidebar => Box::new(app::FocusSidebar),
         Shortcut::FocusNoteList => Box::new(app::FocusNoteList),
         Shortcut::FocusEditor => Box::new(app::FocusEditor),
+        Shortcut::ExportNote => Box::new(app::ExportNote),
+        Shortcut::ExportNotes => Box::new(app::ExportNotes),
         Shortcut::ToggleSidebar => Box::new(app::ToggleSidebar),
         Shortcut::ToggleTheme => Box::new(app::ToggleTheme),
         Shortcut::OpenSettings => Box::new(app::OpenSettings),
@@ -295,6 +297,8 @@ fn icon(command: PaletteCommand) -> Icon {
             Shortcut::FocusSidebar => IconName::PanelLeft.into(),
             Shortcut::FocusNoteList => Lucide::List.into(),
             Shortcut::FocusEditor => IconName::FileText.into(),
+            Shortcut::ExportNote => Lucide::FileDown.into(),
+            Shortcut::ExportNotes => Lucide::BookDown.into(),
             Shortcut::ToggleSidebar => IconName::PanelLeftClose.into(),
             Shortcut::ToggleTheme => IconName::Moon.into(),
             Shortcut::OpenSettings => IconName::Settings.into(),
@@ -410,6 +414,7 @@ mod tests {
                 open_note: None,
                 filter: NoteFilter::All,
                 vim_mode: false,
+                list_export: None,
             });
             let palette = host.read(cx).palette.clone();
             palette.update(cx, |palette, cx| palette.open(groups, false, window, cx));

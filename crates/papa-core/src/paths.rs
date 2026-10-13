@@ -39,6 +39,14 @@ pub fn themes_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("themes"))
 }
 
+/// Where the save dialog for an exported PDF starts: the Documents folder,
+/// or the home folder if there's none.
+pub fn export_dir() -> PathBuf {
+    dirs::document_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_default()
+}
+
 /// `path` for display, with the home folder shortened to `~`.
 pub fn display(path: &Path) -> String {
     shorten_home(path, dirs::home_dir().as_deref())

@@ -25,7 +25,7 @@ use gpui_kit::{
 };
 use papa_core::paths;
 use papa_core::settings::{
-    self as defaults, Appearance, ColorMode, Density, NoteMode, Settings as PapaSettings,
+    self as defaults, Appearance, ColorMode, Density, NoteMode, PaperSize, Settings as PapaSettings,
 };
 
 use crate::settings::AppSettings;
@@ -495,9 +495,34 @@ fn data_page() -> SettingPage {
         None => "Not available on this system".to_owned(),
     };
 
+    let paper = SettingField::dropdown(
+        options(&[("a4", "A4"), ("letter", "US Letter")]),
+        get(|s| {
+            match s.export.paper {
+                PaperSize::A4 => "a4",
+                PaperSize::Letter => "letter",
+            }
+            .into()
+        }),
+        set(|s, value: SharedString| {
+            s.export.paper = match value.as_ref() {
+                "letter" => PaperSize::Letter,
+                _ => PaperSize::A4,
+            }
+        }),
+    )
+    .default_value("a4");
+
     SettingPage::new("Data")
         .icon(IconName::HardDrive)
         .resettable(false)
+        .group(
+            SettingGroup::new().title("PDF export").item(
+                SettingItem::new("Paper size", paper)
+                    .description("The page size of exported notes and books.")
+                    .keywords(["pdf", "print", "a4", "letter", "page"]),
+            ),
+        )
         .group(
             SettingGroup::new()
                 .title("Files")

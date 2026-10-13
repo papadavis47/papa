@@ -20,6 +20,7 @@ impl PapaApp {
                 children: &note.children,
                 labels: &note.labels,
             });
+        let list_export = (!self.notes.is_empty()).then(|| self.list_export_name(cx));
         palette::groups(&PaletteData {
             vault_open: self.is_open(),
             children: &self.children,
@@ -28,6 +29,7 @@ impl PapaApp {
             open_note,
             filter: self.selection.filter,
             vim_mode: AppSettings::get(cx).editor.vim_mode,
+            list_export: list_export.as_deref(),
         })
     }
 

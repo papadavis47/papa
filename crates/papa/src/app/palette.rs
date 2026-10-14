@@ -4,7 +4,10 @@
 use gpui_kit::{App, Context, Entity, Window};
 use papa_core::{NoteFilter, NoteId, NoteQuery, NoteSummary};
 
-use super::{PapaApp, ToggleCommandPalette};
+use super::{
+    ChangePassword, ExportBackup, PapaApp, RemovePassword, RestoreBackup, ToggleCommandPalette,
+    Vault,
+};
 use crate::palette::{self, OpenNote, PaletteCommand, PaletteData, PaletteGroup};
 use crate::settings::AppSettings;
 use crate::ui::{CommandPalette, CommandPaletteEvent, SidebarEvent};
@@ -29,6 +32,13 @@ impl PapaApp {
             open_note,
             filter: self.selection.filter,
             vim_mode: AppSettings::get(cx).editor.vim_mode,
+            encrypted: matches!(
+                self.vault,
+                Vault::Open {
+                    encrypted: true,
+                    ..
+                }
+            ),
             list_export: list_export.as_deref(),
         })
     }
@@ -47,6 +57,11 @@ impl PapaApp {
         let palette = self.palette.clone();
         if palette.read(cx).is_open() {
             palette.update(cx, |palette, cx| palette.close(window, cx));
+            return;
+        }
+        // Nothing to offer while the vault is locked: not even its notes'
+        // titles.
+        if matches!(self.vault, Vault::Locked { .. }) {
             return;
         }
         let groups = self.palette_groups(&[], cx);
@@ -103,6 +118,10 @@ impl PapaApp {
             PaletteCommand::ToggleVimMode => {
                 AppSettings::update(cx, |s| s.editor.vim_mode = !s.editor.vim_mode);
             }
+            PaletteCommand::ChangePassword => self.change_password(&ChangePassword, window, cx),
+            PaletteCommand::RemovePassword => self.remove_password(&RemovePassword, window, cx),
+            PaletteCommand::ExportBackup => self.export_backup(&ExportBackup, window, cx),
+            PaletteCommand::RestoreBackup => self.restore_backup(&RestoreBackup, window, cx),
         }
     }
 

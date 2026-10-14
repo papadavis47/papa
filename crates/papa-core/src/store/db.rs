@@ -3,14 +3,15 @@
 
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::fs::DirBuilder;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use jiff::Timestamp;
-use turso::{Builder, Connection, Database, Row, Value};
+use turso::{Builder, Connection, Database, EncryptionOpts, Row, Value};
 
 use super::migrations;
+use crate::files;
+use crate::lock::{KeyFile, VAULT_CIPHER, VaultKey, key_path};
 use crate::model::{SearchTerms, check_color, clean_child_name, clean_label_name, preview};
 use crate::{
     Child, ChildDraft, ChildId, EncodedImage, Error, ImageFormat, ImageId, Label, LabelId, Note,
@@ -18,33 +19,39 @@ use crate::{
 };
 
 /// Where the vault lives.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Location {
     File(PathBuf),
     /// Gone when the store closes. For tests and, later, demo mode.
     Memory,
 }
 
+impl Location {
+    pub(super) fn path(&self) -> Option<&Path> {
+        match self {
+            Self::File(path) => Some(path),
+            Self::Memory => None,
+        }
+    }
+}
+
 pub(super) struct Db {
     conn: Connection,
     /// Kept alongside the connection so the database outlives it.
     _database: Database,
+    location: Location,
+    /// The key the vault is encrypted with; `None` for a plain vault.
+    key: Option<VaultKey>,
 }
 
 impl Db {
     /// Opens (or creates) the vault and brings its schema up to date.
-    pub(super) async fn open(location: &Location) -> Result<Self> {
-        let path = match location {
-            Location::File(path) => {
-                if let Some(dir) = path.parent() {
-                    create_private_dir(dir)?;
-                }
-                path.to_str()
-                    .ok_or_else(|| Error::NonUtf8Path(path.clone()))?
-            }
-            Location::Memory => ":memory:",
-        };
-        let database = Builder::new_local(path).build().await?;
+    /// `key` must be the vault's key if it's encrypted, and `None` if not.
+    pub(super) async fn open(location: &Location, key: Option<VaultKey>) -> Result<Self> {
+        if let Some(dir) = location.path().and_then(Path::parent) {
+            files::create_private_dir(dir)?;
+        }
+        let database = build(location, key.as_ref()).await?;
         let mut conn = database.connect()?;
         // Off by default, as in SQLite, and set per connection. Without it
         // deleting a child would leave dangling `note_child` rows.
@@ -54,12 +61,65 @@ impl Db {
         Ok(Self {
             conn,
             _database: database,
+            location: location.clone(),
+            key,
         })
     }
 
-    #[cfg(test)]
+    pub(super) fn location(&self) -> &Location {
+        &self.location
+    }
+
+    pub(super) fn key(&self) -> Option<&VaultKey> {
+        self.key.as_ref()
+    }
+
+    /// Closes the vault, first moving everything from the write-ahead log
+    /// into the vault file. Turso doesn't do that itself on close, and the
+    /// file must be whole before it's copied or replaced.
+    ///
+    /// Dropping the database also drops Turso's copy of the key, which
+    /// Turso zeroes.
+    pub(super) async fn close(self) -> Result<()> {
+        checkpoint(&self.conn).await
+    }
+
     pub(super) fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Writes a backup to `dest` (see [`crate::backup`]).
+    pub(super) async fn backup(&self, dest: &Path) -> Result<()> {
+        let path = self.location.path().ok_or(Error::InMemoryVault)?;
+        let key = match self.key {
+            Some(_) => Some(KeyFile::read(&key_path(path))?),
+            None => None,
+        };
+        // The copy is consistent: this thread runs nothing else until it's
+        // done, and after the checkpoint the file holds every commit.
+        checkpoint(&self.conn).await?;
+        crate::backup::write(path, key, migrations::LATEST, dest)
+    }
+
+    /// Reads every row of every table, so every page is read (and, in an
+    /// encrypted vault, decrypted and authenticated).
+    pub(super) async fn check(&self) -> Result<()> {
+        for table in [
+            "child",
+            "label",
+            "note",
+            "note_child",
+            "note_label",
+            "image",
+            "image_data",
+        ] {
+            let mut rows = self
+                .conn
+                .query(&format!("SELECT * FROM {table}"), ())
+                .await?;
+            while rows.next().await?.is_some() {}
+        }
+        Ok(())
     }
 
     // --- Children ---
@@ -630,19 +690,6 @@ async fn set_links<T: Display>(
     Ok(())
 }
 
-/// Creates `dir` and any missing parents. On Unix, new folders are readable
-/// only by the current user: the vault holds private family notes.
-fn create_private_dir(dir: &Path) -> Result<()> {
-    let mut builder = DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(dir).map_err(|source| Error::CreateDir {
-        path: dir.to_owned(),
-        source,
-    })
-}
-
 fn child_from_row(row: &Row) -> Result<Child> {
     let color: i64 = row.get(2)?;
     Ok(Child {
@@ -714,6 +761,44 @@ fn timestamp(row: &Row, idx: usize) -> Result<Timestamp> {
 fn found(changed_rows: u64, what: &'static str) -> Result<()> {
     if changed_rows == 0 {
         return Err(Error::NotFound(what));
+    }
+    Ok(())
+}
+
+/// Opens the database at `location` with Turso, encrypted with `key` if
+/// one is given. Doesn't touch the schema.
+pub(super) async fn build(location: &Location, key: Option<&VaultKey>) -> Result<Database> {
+    let path = match location {
+        Location::File(path) => path
+            .to_str()
+            .ok_or_else(|| Error::NonUtf8Path(path.clone()))?,
+        Location::Memory => ":memory:",
+    };
+    let mut builder = Builder::new_local(path);
+    if let Some(key) = key {
+        // Turso copies the key into a `String` of its own; ours is zeroed
+        // when `hex` drops at the end of this block.
+        let hex = key.hex();
+        builder = builder
+            .experimental_encryption(true)
+            .with_encryption(EncryptionOpts {
+                cipher: VAULT_CIPHER.to_owned(),
+                hexkey: hex.to_string(),
+            });
+    }
+    Ok(builder.build().await?)
+}
+
+/// Moves every commit from the write-ahead log into the database file and
+/// empties the log, so the file alone holds the whole database.
+pub(super) async fn checkpoint(conn: &Connection) -> Result<()> {
+    let mut rows = conn.query("PRAGMA wal_checkpoint(TRUNCATE)", ()).await?;
+    // One row: (busy, frames in the log, frames checkpointed).
+    if let Some(row) = rows.next().await? {
+        let busy: i64 = row.get(0)?;
+        if busy != 0 {
+            return Err(Error::Busy);
+        }
     }
     Ok(())
 }

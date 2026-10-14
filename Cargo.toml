@@ -39,3 +39,8 @@ gif = { opt-level = 3 }
 weezl = { opt-level = 3 }
 moxcms = { opt-level = 3 }
 sha2 = { opt-level = 3 }
+# Same for the vault's encryption: unoptimised, Argon2id takes seconds to
+# unlock and every page read pays for slow AEGIS.
+aegis = { opt-level = 3 }
+argon2 = { opt-level = 3 }
+blake2 = { opt-level = 3 }

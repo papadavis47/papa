@@ -11,22 +11,28 @@
 //!
 //! [`Store`] is the handle: it only holds the sending end of a channel, so it
 //! is cheap to clone and safe to move between threads. The thread owns the
-//! database connection and handles one request at a time, in order. When the
-//! last `Store` clone is dropped the channel closes and the thread exits.
+//! database connection and handles one request at a time, in order. It
+//! exits on [`Store::close`], or when the last `Store` clone is dropped and
+//! the channel closes.
 
 mod db;
 mod migrations;
+mod rekey;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 
 use tokio::sync::{mpsc, oneshot};
 
+use crate::lock::{self, KeyFile, Password, VaultKey, VaultKind, key_path};
 use crate::{
     Child, ChildDraft, ChildId, EncodedImage, Error, ImageId, Label, LabelId, Note, NoteDraft,
     NoteId, NoteImage, NoteQuery, NoteSummary, PreparedImage, Result,
 };
 use db::{Db, Location};
+
+/// The schema version this build of Papa writes.
+pub(crate) const LATEST_SCHEMA: i64 = migrations::LATEST;
 
 /// A handle to the vault. Every method sends a request to the database thread
 /// and waits for its reply, so they can be awaited from any async executor,
@@ -64,27 +70,58 @@ enum Request {
     AddImage(NoteId, Box<PreparedImage>, Reply<NoteImage>),
     DisplayImage(ImageId, Reply<EncodedImage>),
     DeleteImage(ImageId, Reply<()>),
+    IsEncrypted(Reply<bool>),
+    SetPassword(Option<Password>, Password, Reply<()>),
+    RemovePassword(Password, Reply<()>),
+    Backup(PathBuf, Reply<()>),
+    Check(Reply<()>),
+    Close(Reply<()>),
+}
+
+/// How the database thread gets the vault's key, if it needs one.
+enum Unlock {
+    /// The vault isn't encrypted.
+    Plain,
+    /// Derive the key from the password and the key file. Done on the
+    /// database thread: Argon2id takes a moment, on purpose.
+    Password(Password),
+    Key(VaultKey),
 }
 
 impl Store {
     /// Opens the vault file at `path`, creating it and its folder if needed,
     /// and migrates it to the current schema.
+    ///
+    /// Fails with [`Error::Locked`] if the vault is encrypted: open it with
+    /// [`unlock`](Self::unlock) instead.
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self> {
-        Self::start(Location::File(path.into())).await
+        Self::start(Location::File(path.into()), Unlock::Plain).await
+    }
+
+    /// Opens an encrypted vault with its password. Fails with
+    /// [`Error::WrongPassword`] if it isn't the right one.
+    pub async fn unlock(path: impl Into<PathBuf>, password: Password) -> Result<Self> {
+        Self::start(Location::File(path.into()), Unlock::Password(password)).await
+    }
+
+    /// Opens a vault whose key is already known (or plain, for `None`).
+    pub(crate) async fn open_with_key(path: &Path, key: Option<VaultKey>) -> Result<Self> {
+        let unlock = key.map_or(Unlock::Plain, Unlock::Key);
+        Self::start(Location::File(path.to_owned()), unlock).await
     }
 
     /// A throwaway vault in memory: for tests, and later for demo mode.
     pub async fn open_in_memory() -> Result<Self> {
-        Self::start(Location::Memory).await
+        Self::start(Location::Memory, Unlock::Plain).await
     }
 
     /// Spawns the database thread and waits until the vault is open.
-    async fn start(location: Location) -> Result<Self> {
+    async fn start(location: Location, unlock: Unlock) -> Result<Self> {
         let (requests, inbox) = mpsc::unbounded_channel();
         let (opened, open_result) = oneshot::channel();
         thread::Builder::new()
             .name("papa-store".into())
-            .spawn(move || serve(location, inbox, opened))
+            .spawn(move || serve(location, unlock, inbox, opened))
             .map_err(Error::StartThread)?;
         // The outer `?` covers the thread dying before it replied; the inner
         // one is the result of opening the vault.
@@ -203,6 +240,51 @@ impl Store {
         self.call(|reply| Request::DeleteImage(id, reply)).await
     }
 
+    /// Whether the vault is encrypted with a password.
+    pub async fn is_encrypted(&self) -> Result<bool> {
+        self.call(Request::IsEncrypted).await
+    }
+
+    /// Gives the vault a password, encrypting it, or changes the password
+    /// it has. `current` must be the current password, if there is one;
+    /// otherwise it fails with [`Error::WrongPassword`].
+    ///
+    /// Encrypting rewrites the whole vault, so it takes a moment for a
+    /// large one. Changing the password only rewrites its key file.
+    pub async fn set_password(&self, current: Option<Password>, new: Password) -> Result<()> {
+        self.call(|reply| Request::SetPassword(current, new, reply))
+            .await
+    }
+
+    /// Takes the password off the vault, decrypting it, after checking
+    /// `current` is the password.
+    pub async fn remove_password(&self, current: Password) -> Result<()> {
+        self.call(|reply| Request::RemovePassword(current, reply))
+            .await
+    }
+
+    /// Writes a backup of the vault to `dest` (see [`crate::backup`]).
+    pub async fn backup(&self, dest: impl Into<PathBuf>) -> Result<()> {
+        let dest = dest.into();
+        self.call(|reply| Request::Backup(dest, reply)).await
+    }
+
+    /// Reads every row of every table: every page of an encrypted vault
+    /// is decrypted on the way.
+    pub(crate) async fn check(&self) -> Result<()> {
+        self.call(Request::Check).await
+    }
+
+    /// Closes the vault and stops the database thread. Other clones of this
+    /// `Store` get [`Error::StoreClosed`] from then on.
+    ///
+    /// Locking an encrypted vault calls this: dropping every clone would
+    /// close it too, but only once the last one is gone, and a forgotten
+    /// clone would keep the key in memory.
+    pub async fn close(&self) -> Result<()> {
+        self.call(Request::Close).await
+    }
+
     /// Sends the request built by `request` and waits for the reply.
     async fn call<T>(&self, request: impl FnOnce(Reply<T>) -> Request) -> Result<T> {
         let (reply, response) = oneshot::channel();
@@ -213,9 +295,37 @@ impl Store {
     }
 }
 
+/// Finds the vault's key, then opens it. A plain vault left with a key file
+/// by an interrupted change of password gets rid of it.
+async fn open(location: &Location, unlock: Unlock) -> Result<Db> {
+    let path = location.path();
+    let key = match unlock {
+        Unlock::Key(key) => Some(key),
+        Unlock::Password(password) => {
+            let path = path.ok_or(Error::InMemoryVault)?;
+            Some(KeyFile::read(&key_path(path))?.unwrap(&password)?)
+        }
+        Unlock::Plain => {
+            if let Some(path) = path
+                && lock::inspect(path)? == VaultKind::Encrypted
+            {
+                return Err(Error::Locked);
+            }
+            None
+        }
+    };
+    let plain = key.is_none();
+    let db = Db::open(location, key).await?;
+    if plain && let Some(path) = path {
+        crate::files::remove_if_exists(&key_path(path))?;
+    }
+    Ok(db)
+}
+
 /// The body of the database thread.
 fn serve(
     location: Location,
+    unlock: Unlock,
     mut inbox: mpsc::UnboundedReceiver<Request>,
     opened: oneshot::Sender<Result<()>>,
 ) {
@@ -231,7 +341,7 @@ fn serve(
     };
 
     runtime.block_on(async move {
-        let mut db = match Db::open(&location).await {
+        let mut db = match open(&location, unlock).await {
             Ok(db) => db,
             Err(err) => {
                 let _ = opened.send(Err(err));
@@ -242,7 +352,30 @@ fn serve(
 
         // `recv` returns `None` once every `Store` clone has been dropped.
         while let Some(request) = inbox.recv().await {
-            handle(&mut db, request).await;
+            // Requests that replace or close the database take it by value;
+            // the rest borrow it.
+            let (next, reply, result) = match request {
+                Request::SetPassword(current, new, reply) => {
+                    let (next, result) = rekey::set_password(db, current, new).await;
+                    (next, reply, result)
+                }
+                Request::RemovePassword(current, reply) => {
+                    let (next, result) = rekey::remove_password(db, current).await;
+                    (next, reply, result)
+                }
+                Request::Close(reply) => (None, reply, db.close().await),
+                request => {
+                    handle(&mut db, request).await;
+                    continue;
+                }
+            };
+            let _ = reply.send(result);
+            match next {
+                Some(next) => db = next,
+                // Closed, or couldn't be reopened: requests still queued
+                // get `StoreClosed` when the inbox drops.
+                None => return,
+            }
         }
     });
 }
@@ -308,8 +441,22 @@ async fn handle(db: &mut Db, request: Request) {
         Request::DeleteImage(id, reply) => {
             let _ = reply.send(db.delete_image(id).await);
         }
+        Request::IsEncrypted(reply) => {
+            let _ = reply.send(Ok(db.key().is_some()));
+        }
+        Request::Backup(dest, reply) => {
+            let _ = reply.send(db.backup(&dest).await);
+        }
+        Request::Check(reply) => {
+            let _ = reply.send(db.check().await);
+        }
+        Request::SetPassword(..) | Request::RemovePassword(..) | Request::Close(..) => {
+            unreachable!("handled by `serve`")
+        }
     }
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vault_tests;

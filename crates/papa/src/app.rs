@@ -1,17 +1,23 @@
 //! The root view: owns the app's state and lays out the window.
 //!
 //! `PapaApp`'s methods are split by the pane they serve: `sidebar.rs`
-//! (children and labels) and `notes.rs` (the note list and the editor).
-//! Rust allows several `impl` blocks for one type, in different modules.
+//! (children and labels) and `notes.rs` (the note list and the editor),
+//! and by feature: `export.rs` (PDF), `lock.rs` (the password, locking)
+//! and `backup.rs`. Rust allows several `impl` blocks for one type, in
+//! different modules.
 
+mod backup;
 mod export;
+mod lock;
 mod notes;
 mod palette;
 mod sidebar;
 
+pub use lock::VaultStatus;
+
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use gpui_kit::component::{
@@ -24,10 +30,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyBinding, KeyContext, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Task, UniformListScrollHandle, Window, div, px,
+    Action, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Global,
+    InteractiveElement as _, IntoElement, KeyBinding, KeyContext, ParentElement as _, Render,
+    SharedString, Styled as _, Subscription, Task, UniformListScrollHandle, Window, div, px,
 };
+use papa_core::lock::{Password, VaultKind};
 use papa_core::{Child, Label, NoteFilter, NoteSummary, Store, paths};
 
 use crate::settings::AppSettings;
@@ -35,7 +42,7 @@ use crate::state::Selection;
 use crate::ui::lightbox::{CloseLightbox, LIGHTBOX_CONTEXT, NextImage, PreviousImage};
 use crate::ui::{
     AppSidebar, AppTitleBar, COMMAND_PALETTE_CONTEXT, CommandPalette, EmptyNotes,
-    NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteListEvent, NoteView, sentence,
+    NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteListEvent, NoteView, UnlockScreen, sentence,
 };
 use crate::{settings_window, theme, vim};
 
@@ -79,6 +86,17 @@ gpui_kit::actions!(
         /// Save the notes in the list as a PDF: a child's book, or the
         /// notes a label or search picked out.
         ExportNotes,
+        /// Lock a vault that has a password: close it and ask for the
+        /// password again.
+        LockVault,
+        /// Give the vault a password, or change the one it has.
+        ChangePassword,
+        /// Take the password off the vault.
+        RemovePassword,
+        /// Save a backup of the vault.
+        ExportBackup,
+        /// Replace the vault with a backup.
+        RestoreBackup,
     ]
 );
 
@@ -131,6 +149,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-o", AddImages, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-p", ExportNote, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-shift-p", ExportNotes, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-l", LockVault, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-k", ToggleCommandPalette, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-1", FocusSidebar, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-2", FocusNoteList, Some(APP_CONTEXT)),
@@ -174,9 +193,32 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
 }
 
+/// The main window, so the Settings window can send it commands.
+#[derive(Clone, Copy)]
+struct MainWindow(AnyWindowHandle);
+
+impl Global for MainWindow {}
+
+/// Runs `action` in the main window, as if chosen there, and brings that
+/// window forward. The Settings window's vault buttons use it: the vault
+/// and its dialogs belong to the main window.
+pub fn dispatch_to_main(action: &dyn Action, cx: &mut App) {
+    let Some(&MainWindow(window)) = cx.try_global::<MainWindow>() else {
+        return;
+    };
+    let action = action.boxed_clone();
+    window
+        .update(cx, |_, window, cx| {
+            window.activate_window();
+            window.dispatch_action(action, cx);
+        })
+        .ok();
+}
+
 /// Ends the app when `main_window` closes, even if the Settings window is
 /// still open.
 pub fn quit_with(main_window: AnyWindowHandle, cx: &mut App) {
+    cx.set_global(MainWindow(main_window));
     let main_window = main_window.window_id();
     cx.on_window_closed(move |cx, closed| {
         if closed == main_window || cx.windows().is_empty() {
@@ -188,42 +230,64 @@ pub fn quit_with(main_window: AnyWindowHandle, cx: &mut App) {
 
 /// Where the vault is in its life.
 enum Vault {
-    /// The database thread is starting up and migrating.
+    /// The database thread is starting up and migrating, or the vault is
+    /// being closed or replaced.
     Opening,
+    /// Encrypted, and waiting for its password.
+    Locked {
+        path: PathBuf,
+        screen: Entity<UnlockScreen>,
+    },
     Open {
         /// Cheap to clone: each background task takes its own copy.
         store: Store,
         path: PathBuf,
+        /// It has a password.
+        encrypted: bool,
     },
     /// Opening failed; the error was shown in a notification.
     Failed,
 }
 
-/// What the startup task hands back once the vault is open.
+/// How far opening the vault got.
+enum Opened {
+    Open(OpenedVault),
+    /// It's encrypted, and no password was given.
+    Locked(PathBuf),
+}
+
+/// What opening hands back once the vault is open.
 struct OpenedVault {
     store: Store,
     path: PathBuf,
+    encrypted: bool,
     children: Vec<Child>,
     labels: Vec<Label>,
 }
 
-/// Opens the vault and reads everything the sidebar shows.
+/// Opens the vault at `path` and reads everything the sidebar shows. An
+/// encrypted vault is opened with `password`, or comes back
+/// [`Opened::Locked`] without one.
 ///
 /// Returns `anyhow::Result`: the app only displays these errors, so it adds
 /// context to them rather than matching on `papa_core::Error`'s variants.
-async fn open_vault() -> anyhow::Result<OpenedVault> {
-    let path = paths::vault_path()?;
-    let store = Store::open(&path)
-        .await
-        .with_context(|| format!("couldn't open the vault at {}", paths::display(&path)))?;
+async fn open_vault(path: PathBuf, password: Option<Password>) -> anyhow::Result<Opened> {
+    let encrypted = papa_core::lock::inspect(&path)? == VaultKind::Encrypted;
+    let store = match password {
+        Some(password) if encrypted => Store::unlock(&path, password).await,
+        _ if encrypted => return Ok(Opened::Locked(path)),
+        _ => Store::open(&path).await,
+    }
+    .with_context(|| format!("couldn't open the vault at {}", paths::display(&path)))?;
     let children = store.children().await.context("couldn't load children")?;
     let labels = store.labels().await.context("couldn't load labels")?;
-    Ok(OpenedVault {
+    Ok(Opened::Open(OpenedVault {
         store,
         path,
+        encrypted,
         children,
         labels,
-    })
+    }))
 }
 
 pub struct PapaApp {
@@ -241,8 +305,19 @@ pub struct PapaApp {
     /// replacing the task cancels the previous one.
     search_task: Option<Task<()>>,
     note_scroll: UniformListScrollHandle,
-    /// Created once the vault is open: it needs the store.
+    /// Created once the vault is open: it needs the store. Dropped when
+    /// it closes, with everything it shows.
     editor: Option<Entity<NoteEditor>>,
+    editor_subscription: Option<Subscription>,
+    /// Counts the vaults opened. A store request answered after its vault
+    /// was closed (locked, say) is ignored: its results belong to a vault
+    /// that's gone.
+    generation: u64,
+    /// The last key press, click or mouse move: auto-lock counts from here.
+    last_activity: Instant,
+    /// Checks every few seconds whether it's time to auto-lock.
+    _auto_lock: Task<()>,
+    unlock_subscription: Option<Subscription>,
     /// ⌘K. Drawn over everything else while open.
     palette: Entity<CommandPalette>,
     sidebar_visible: bool,
@@ -306,6 +381,8 @@ impl PapaApp {
             // change only needs a redraw. It redraws the whole window, the
             // editor included.
             cx.observe_global::<AppSettings>(|_, cx| cx.notify()),
+            // Typing anywhere, the Settings window included, counts as use.
+            cx.observe_keystrokes(|this, _, _, _| this.last_activity = Instant::now()),
         ];
         theme::set_system_appearance(window, cx);
         if let Some(err) = settings_problem {
@@ -325,10 +402,11 @@ impl PapaApp {
         // thread without blocking the UI, then fills in the state. `this` is a
         // weak handle, so the task doesn't keep a closed window's view alive.
         cx.spawn_in(window, async move |this, cx| {
-            let opened = open_vault().await;
+            let opened = async { open_vault(paths::vault_path()?, None).await }.await;
             this.update_in(cx, |this, window, cx| this.vault_opened(opened, window, cx))
         })
         .detach();
+        cx.set_global(VaultStatus::Unavailable);
 
         Self {
             vault: Vault::Opening,
@@ -340,6 +418,11 @@ impl PapaApp {
             search_task: None,
             note_scroll: UniformListScrollHandle::new(),
             editor: None,
+            editor_subscription: None,
+            generation: 0,
+            last_activity: Instant::now(),
+            _auto_lock: Self::watch_idle(window, cx),
+            unlock_subscription: None,
             palette,
             sidebar_visible: true,
             exporting: None,
@@ -352,26 +435,34 @@ impl PapaApp {
 
     fn vault_opened(
         &mut self,
-        opened: anyhow::Result<OpenedVault>,
+        opened: anyhow::Result<Opened>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match opened {
-            Ok(opened) => {
+            Ok(Opened::Open(opened)) => {
                 let editor = cx.new(|cx| NoteEditor::new(opened.store.clone(), window, cx));
-                self._subscriptions
-                    .push(cx.subscribe_in(&editor, window, Self::on_editor_event));
+                self.editor_subscription =
+                    Some(cx.subscribe_in(&editor, window, Self::on_editor_event));
                 self.editor = Some(editor);
-                self.vault = Vault::Open {
-                    store: opened.store,
-                    path: opened.path,
-                };
+                self.unlock_subscription = None;
+                self.set_vault(
+                    Vault::Open {
+                        store: opened.store,
+                        path: opened.path,
+                        encrypted: opened.encrypted,
+                    },
+                    cx,
+                );
+                self.last_activity = Instant::now();
                 self.children = Rc::new(opened.children);
                 self.labels = Rc::new(opened.labels);
                 self.catalog_changed(window, cx);
+                self.sidebar_focus.focus(window, cx);
             }
+            Ok(Opened::Locked(path)) => self.show_locked(path, window, cx),
             Err(err) => {
-                self.vault = Vault::Failed;
+                self.set_vault(Vault::Failed, cx);
                 // `{:#}` prints the whole chain: "couldn't open the vault at
                 // …: <the reason from papa-core>".
                 window.push_notification(
@@ -407,9 +498,13 @@ impl PapaApp {
             return;
         };
         let store = store.clone();
+        let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
             let result = job(store).await;
             this.update_in(cx, |this, window, cx| {
+                if this.generation != generation {
+                    return;
+                }
                 match result {
                     Ok(value) => apply(this, value, window, cx),
                     Err(err) => window
@@ -456,9 +551,26 @@ impl Render for PapaApp {
         let note_list_focused = self.note_list_focus.contains_focused(window, cx);
         let status: SharedString = match &self.vault {
             Vault::Opening => "Opening vault…".into(),
+            Vault::Locked { .. } => "Locked".into(),
+            Vault::Open {
+                path,
+                encrypted: true,
+                ..
+            } => format!("{} · encrypted", paths::display(path)).into(),
             Vault::Open { path, .. } => paths::display(path).into(),
             Vault::Failed => "Vault unavailable".into(),
         };
+        let locked = match &self.vault {
+            Vault::Locked { screen, .. } => Some(screen.clone()),
+            _ => None,
+        };
+        let encrypted = matches!(
+            self.vault,
+            Vault::Open {
+                encrypted: true,
+                ..
+            }
+        );
         let vim = AppSettings::get(cx).editor.vim_mode;
         let vim_status = self
             .editor
@@ -489,71 +601,91 @@ impl Render for PapaApp {
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::export_note))
             .on_action(cx.listener(Self::export_notes))
+            .on_action(cx.listener(Self::lock_vault))
+            .on_action(cx.listener(Self::change_password))
+            .on_action(cx.listener(Self::remove_password))
+            .on_action(cx.listener(Self::export_backup))
+            .on_action(cx.listener(Self::restore_backup))
+            // Using the window keeps an encrypted vault from auto-locking.
+            .on_mouse_move(cx.listener(|this, _, _, _| this.last_activity = Instant::now()))
+            .capture_any_mouse_down(
+                cx.listener(|this, _, _, _| this.last_activity = Instant::now()),
+            )
+            .on_scroll_wheel(cx.listener(|this, _, _, _| this.last_activity = Instant::now()))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(AppTitleBar::new(self.sidebar_visible))
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("panes")
-                        .child(
-                            resizable_panel()
-                                .visible(self.sidebar_visible)
-                                .size(px(220.))
-                                .size_range(px(180.)..px(320.))
-                                .flex_none()
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .key_context(pane_context(SIDEBAR_CONTEXT, vim))
-                                        .track_focus(&self.sidebar_focus)
-                                        .on_action(cx.listener(Self::select_next_filter))
-                                        .on_action(cx.listener(Self::select_previous_filter))
-                                        .child(
-                                            AppSidebar::new(
-                                                &self.children,
-                                                &self.labels,
-                                                self.selection.filter,
-                                                self.is_open(),
-                                                cx.listener(Self::on_sidebar_event),
-                                            )
-                                            .focused(sidebar_focused),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size(px(300.))
-                                .size_range(px(220.)..px(480.))
-                                .flex_none()
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .key_context(pane_context(NOTE_LIST_CONTEXT, vim))
-                                        .track_focus(&self.note_list_focus)
-                                        .on_action(cx.listener(Self::select_next_note))
-                                        .on_action(cx.listener(Self::select_previous_note))
-                                        .child(
-                                            NoteList::new(
-                                                self.list_heading(),
-                                                self.notes.clone(),
-                                                self.children.clone(),
-                                                self.selection.note,
-                                                self.search.clone(),
-                                                self.note_scroll.clone(),
-                                                self.empty_notes(cx),
-                                                AppSettings::get(cx).appearance.density,
-                                                self.is_open(),
-                                                cx.listener(Self::on_note_list_event),
-                                            )
-                                            .export(self.list_export_name(cx))
-                                            .focused(note_list_focused),
-                                        ),
-                                ),
-                        )
-                        .child(resizable_panel().child(editor)),
-                ),
-            )
+            .child(AppTitleBar::new(
+                self.sidebar_visible,
+                locked.is_some(),
+                encrypted,
+            ))
+            .when_some(locked.clone(), |this, screen| {
+                this.child(div().flex_1().min_h_0().child(screen))
+            })
+            .when(locked.is_none(), |this| {
+                this.child(
+                    div().flex_1().min_h_0().child(
+                        h_resizable("panes")
+                            .child(
+                                resizable_panel()
+                                    .visible(self.sidebar_visible)
+                                    .size(px(220.))
+                                    .size_range(px(180.)..px(320.))
+                                    .flex_none()
+                                    .child(
+                                        div()
+                                            .size_full()
+                                            .key_context(pane_context(SIDEBAR_CONTEXT, vim))
+                                            .track_focus(&self.sidebar_focus)
+                                            .on_action(cx.listener(Self::select_next_filter))
+                                            .on_action(cx.listener(Self::select_previous_filter))
+                                            .child(
+                                                AppSidebar::new(
+                                                    &self.children,
+                                                    &self.labels,
+                                                    self.selection.filter,
+                                                    self.is_open(),
+                                                    cx.listener(Self::on_sidebar_event),
+                                                )
+                                                .focused(sidebar_focused),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .size(px(300.))
+                                    .size_range(px(220.)..px(480.))
+                                    .flex_none()
+                                    .child(
+                                        div()
+                                            .size_full()
+                                            .key_context(pane_context(NOTE_LIST_CONTEXT, vim))
+                                            .track_focus(&self.note_list_focus)
+                                            .on_action(cx.listener(Self::select_next_note))
+                                            .on_action(cx.listener(Self::select_previous_note))
+                                            .child(
+                                                NoteList::new(
+                                                    self.list_heading(),
+                                                    self.notes.clone(),
+                                                    self.children.clone(),
+                                                    self.selection.note,
+                                                    self.search.clone(),
+                                                    self.note_scroll.clone(),
+                                                    self.empty_notes(cx),
+                                                    AppSettings::get(cx).appearance.density,
+                                                    self.is_open(),
+                                                    cx.listener(Self::on_note_list_event),
+                                                )
+                                                .export(self.list_export_name(cx))
+                                                .focused(note_list_focused),
+                                            ),
+                                    ),
+                            )
+                            .child(resizable_panel().child(editor)),
+                    ),
+                )
+            })
             .child(
                 StatusBar::new()
                     .when_some(vim_status, |bar, status| {
@@ -619,7 +751,7 @@ impl PapaApp {
         let new_note =
             |label: &str| Some((SharedString::from(label.to_owned()), NoteListEvent::NewNote));
         match self.vault {
-            Vault::Opening => {
+            Vault::Opening | Vault::Locked { .. } => {
                 return empty(
                     "opening",
                     IconName::BookOpen.into(),

@@ -174,7 +174,7 @@ async fn a_vault_file_keeps_its_data_after_reopening() {
 
 #[tokio::test]
 async fn migrations_bring_a_new_vault_to_the_latest_version() {
-    let db = Db::open(&Location::Memory).await.unwrap();
+    let db = Db::open(&Location::Memory, None).await.unwrap();
 
     let version = migrations::schema_version(db.connection()).await.unwrap();
 
@@ -187,7 +187,7 @@ async fn a_vault_from_a_newer_version_is_refused() {
     let path = dir.path().join("vault.db");
     let future = migrations::LATEST + 1;
     {
-        let db = Db::open(&Location::File(path.clone())).await.unwrap();
+        let db = Db::open(&Location::File(path.clone()), None).await.unwrap();
         db.connection()
             .execute(&format!("PRAGMA user_version = {future}"), ())
             .await
@@ -472,7 +472,7 @@ async fn a_deleted_note_leaves_only_a_tombstone() {
     store.delete_note(added.id).await.unwrap();
     drop(store);
 
-    let db = Db::open(&Location::File(path)).await.unwrap();
+    let db = Db::open(&Location::File(path), None).await.unwrap();
     let mut rows = db
         .connection()
         .query(
@@ -605,7 +605,7 @@ async fn deleting_a_note_deletes_its_images() {
     store.delete_note(note.id).await.unwrap();
     drop(store);
 
-    let db = Db::open(&Location::File(path)).await.unwrap();
+    let db = Db::open(&Location::File(path), None).await.unwrap();
     for table in ["image", "image_data"] {
         let mut rows = db
             .connection()
@@ -655,7 +655,7 @@ async fn large_images_survive_reopening_the_vault() {
 async fn image_queries_never_scan_the_image_bytes() {
     // A scan of `image_data` reads every original in the vault: seconds,
     // not milliseconds. Checked on the plans, as timing would be flaky.
-    let db = Db::open(&Location::Memory).await.unwrap();
+    let db = Db::open(&Location::Memory, None).await.unwrap();
     let queries = [
         format!("{SELECT_IMAGES} WHERE image.note_id = ?1 AND ?2 ORDER BY image.id"),
         format!("{SELECT_IMAGES} WHERE image.note_id = ?1 AND image.sha256 = ?2"),

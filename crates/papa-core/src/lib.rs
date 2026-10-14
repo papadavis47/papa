@@ -6,12 +6,17 @@
 //! - [`images`]: turns attached photos into what the vault stores.
 //! - [`settings`]: the father's preferences and their file, `settings.json`.
 //! - [`paths`]: where the vault and the settings live on disk.
+//! - [`lock`]: the vault's password, and the key file it unlocks.
+//! - [`backup`]: backups of the vault, and restoring one.
 //!
 //! Planned (see `PLAN.md`): crypto for shared notes,
 //! the share projection and the relay client.
 
+pub mod backup;
 mod error;
+mod files;
 pub mod images;
+pub mod lock;
 pub mod model;
 pub mod paths;
 pub mod settings;

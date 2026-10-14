@@ -395,6 +395,15 @@ impl NoteEditor {
         }
     }
 
+    /// Starts saving what's unsaved, and returns a future that's done once
+    /// it's stored. Locking the vault waits for it before closing the vault.
+    pub fn save_before_closing(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> impl Future<Output = ()> + use<> {
+        self.save_before_quit(cx)
+    }
+
     fn save_before_quit(&mut self, cx: &mut Context<Self>) -> impl Future<Output = ()> + use<> {
         let save = self.start_save(cx);
         async move {

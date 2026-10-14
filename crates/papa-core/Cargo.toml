@@ -8,8 +8,20 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Turns the vault password into a key, slowly on purpose (Phase 9). Only the
+# raw derivation: the default features add PHC password-hash strings, which
+# Papa doesn't store.
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
+# Wraps the vault key under the password-derived key; Phase 11 encrypts
+# shared notes with it too. `zeroize` wipes its key schedule on drop.
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 # Finds the OS data directory for the default vault location.
 dirs = "7.0.0"
+# Random vault keys, salts and nonces, straight from the OS.
+getrandom = "0.4"
+# The key file's salt, nonce and wrapped key as hex, and the vault key in the
+# form Turso takes it.
+hex = { version = "0.4.3", features = ["serde"] }
 # Decodes, rotates, shrinks and re-encodes attached photos. Only the formats
 # Papa accepts; the default features would add a dozen more, and AVIF needs
 # a C library.
@@ -30,6 +42,8 @@ tokio = { version = "1.53.2", default-features = false, features = ["rt", "sync"
 # full-text search before Phase 3 needs it.
 turso = { version = "=0.8.2", default-features = false }
 uuid = { version = "1.28.0", features = ["v7"] }
+# Overwrites passwords and keys when they're dropped.
+zeroize = { version = "1.9", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

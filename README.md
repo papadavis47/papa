@@ -5,7 +5,7 @@
 
 A private, local-first journal for fathers. Keep a profile for each of your children, write notes and save photos about them, and, if you choose, share some of those notes with a child, who can read them in the same app, export them to PDF and message you back.
 
-> **Status:** early development, built in public. Phases 0–8 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode, PDF export) are done. See [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** early development, built in public. Phases 0–8 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode, PDF export) are done; Phase 9 (vault lock and backup) is in review. See [PLAN.md](PLAN.md) for the roadmap.
 
 ## Planned features
 
@@ -77,7 +77,7 @@ PAPA_VAULT=/tmp/papa-dev.db PAPA_CONFIG_DIR=/tmp/papa-dev-config cargo run
 
 ## Privacy
 
-Real vaults live in your operating system's app-data directory, never in this repository. Anything shared through the cloud is encrypted on your device first, so the server only ever stores ciphertext. Screenshots and test data use invented children and notes.
+Real vaults live in your operating system's app-data directory, never in this repository. A vault can be locked with a password, which encrypts it on disk (Settings → Privacy); without the password the file is unreadable, and a forgotten password can't be recovered. Settings → Data → Back up saves the whole vault as one file to keep elsewhere. Anything shared through the cloud is encrypted on your device first, so the server only ever stores ciphertext. Screenshots and test data use invented children and notes.
 
 ## License
 

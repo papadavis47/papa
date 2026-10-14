@@ -5,7 +5,7 @@
 
 A private, local-first journal for fathers. Keep a profile for each of your children, write notes and save photos about them, and, if you choose, share some of those notes with a child, who can read them in the same app, export them to PDF and message you back.
 
-> **Status:** early development, built in public. Phases 0–8 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode, PDF export) are done; Phase 9 (vault lock and backup) is in review. See [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** early development, built in public. Phases 0–9 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode, PDF export, vault lock and backup) are done; Phase 10 (the relay server) is in review. See [PLAN.md](PLAN.md) for the roadmap.
 
 ## Planned features
 
@@ -74,6 +74,18 @@ Settings live apart from the vault, in `~/.config/papa/settings.json` on Linux a
 ```sh
 PAPA_VAULT=/tmp/papa-dev.db PAPA_CONFIG_DIR=/tmp/papa-dev-config cargo run
 ```
+
+### The relay server
+
+`papa-relay` handles accounts, invites and access to shared notes. For development it runs against Turso's local sync server, so no cloud account is needed. You need the `tursodb` CLI ([Turso releases](https://github.com/tursodatabase/turso/releases), v0.8.2):
+
+```sh
+tursodb --sync-server 127.0.0.1:8080 --sync-dir dev-sync
+PAPA_RELAY_LOCAL_SYNC_DIR=dev-sync cargo run -p papa-relay
+cargo run -p papa-relay -- admin invite create "Me"   # in another terminal
+```
+
+Its settings are environment variables, listed in [.env.example](.env.example).
 
 ## Privacy
 

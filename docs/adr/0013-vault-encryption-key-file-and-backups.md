@@ -1,6 +1,6 @@
 # 0013. Vault encryption with a wrapped key, and backups as one file
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-14
 
 ## Context

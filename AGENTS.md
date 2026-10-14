@@ -29,6 +29,7 @@ Cargo workspace; root `Cargo.toml` holds shared package metadata, lints and path
 ## Commands
 - Build: `cargo build --workspace`
 - Run app: `cargo run`
+- Run relay: `cargo run -p papa-relay` (local mode needs `tursodb --sync-server`; see README)
 - Test: `cargo test --workspace`
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings` (CI fails on warnings)
 - Format: `cargo fmt --all` (CI runs `--check`)

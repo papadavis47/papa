@@ -216,6 +216,34 @@ The vault is one Turso (SQLite-format) file: `vault.db` in the OS data directory
 - **`BookWorld` is Typst's view of the world.** Typst reads nothing itself; it asks the `World` trait for sources, files, fonts and the date. Ours serves the two sources and the photos from memory, and the fonts Typst bundles (Libertinus Serif, DejaVu Sans Mono) plus the system's, which fill in emoji and other scripts. The system scan happens once, on the first export.
 - **Long-running-app hygiene:** photos get positional paths (`/photos/0.jpg`), because Typst interns every path for the life of the process and holds at most 65,535; and Typst's memoization cache is evicted after each export.
 
+## Relay
+
+`papa-relay` is an axum server on tokio. It never sees plaintext; it decides who may reach which share database. See [ADR 0005](adr/0005-central-invite-only-relay.md) and [ADR 0014](adr/0014-relay-api-tokens-and-local-sync.md). The routes and their bodies are listed in `papa-proto`'s docs.
+
+```diagram
+ app ──HTTPS /v1/…──▶ api.rs (handlers, `Father` extractor, rate limit)
+                          │                         │
+                          ▼                         ▼
+                 store/ (relay.db, turso)    provision.rs
+                 account · invite ·          ├─ Local: tursodb --sync-server, /db/<name>
+                 session · share             └─ Cloud: Turso Platform API (create, delete, mint JWT)
+ papa-relay admin … ──Unix socket (0600)──▶ admin.rs ──▶ store
+```
+
+- **State:** one `AppState` (an `Arc`) holds the store, the provisioner and the rate limiter. The store is one Turso connection behind a tokio mutex, so requests take turns at the database.
+- **Who's asking:** a father sends `Authorization: Bearer <session token>`. The `Father` extractor turns it into an account id before the handler runs, and every share query is scoped to that account. A child sends Dad's email and their `auth_key`, and gets a one-hour token for their share only.
+- **Secrets:** father passwords are hashed with Argon2id on the blocking pool. Session tokens, invite codes and `auth_key`s are long and random, so they're stored as SHA-256. Errors are JSON `{code, message}`; a 500's details go to the log only.
+- **Two backends:** local mode for development (no cloud, no token checks at the database) and cloud mode (one Turso Cloud database per share, JWTs scoped to it).
+- **Admin:** invite codes are minted through a Unix socket next to the database, since Turso locks the file while the relay runs.
+
+### Running it locally
+
+```sh
+tursodb --sync-server 127.0.0.1:8080 --sync-dir dev-sync     # Turso's CLI, v0.8.2
+PAPA_RELAY_LOCAL_SYNC_DIR=dev-sync cargo run -p papa-relay   # listens on 127.0.0.1:8787
+cargo run -p papa-relay -- admin invite create "Me"           # prints an invite code
+```
+
 ## Data flow (planned)
 
 1. The father's vault is a local Turso database. It is the source of truth and works offline.
@@ -233,4 +261,4 @@ The vault is one Turso (SQLite-format) file: `vault.db` in the OS data directory
 
 - Optional encryption at rest for the local vault (Turso, AEGIS-256), with its key wrapped under the father's password (Argon2id + XChaCha20-Poly1305). Locking closes the vault and drops its key. Done in Phase 9; the rest is planned.
 - End-to-end encryption for everything in the cloud (XChaCha20-Poly1305). The relay and Turso only see ciphertext, ids and timestamps.
-- Tokens are short-lived and scoped to a single database. No admin or Platform credentials ship in the app.
+- Tokens are short-lived (one hour) and scoped to a single database. No admin or Platform credentials ship in the app. The relay stores only hashes of passwords, session tokens, invite codes and child keys (Phase 10).

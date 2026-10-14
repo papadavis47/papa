@@ -4,7 +4,8 @@
 //! parent passes in, consumed when rendered. State lives in the `PapaApp`
 //! entity; these only describe how it looks and report clicks back through
 //! callbacks. The exceptions are entities with state of their own:
-//! `NameForm` holds a dialog's half-typed input, `NoteEditor` the open
+//! `NameForm` and `PasswordForm` hold a dialog's half-typed input,
+//! `UnlockScreen` the password typed to unlock, `NoteEditor` the open
 //! note's text and its pending save, `Gallery` the note's images and
 //! `Lightbox` the one shown full size.
 
@@ -18,16 +19,20 @@ mod name_form;
 mod note_editor;
 mod note_list;
 mod note_view;
+mod password_form;
 mod sidebar;
 mod title_bar;
+mod unlock;
 
 pub use command_palette::{COMMAND_PALETTE_CONTEXT, CommandPalette, CommandPaletteEvent};
 pub use name_form::suggested_color;
 pub use note_editor::{NoteEditor, NoteEditorEvent};
 pub use note_list::{EmptyNotes, NOTE_SEARCH_CONTEXT, NoteList, NoteListEvent};
 pub use note_view::NoteView;
+pub use password_form::{PasswordEntry, PasswordForm, PasswordPurpose};
 pub use sidebar::{AppSidebar, SidebarEvent};
 pub use title_bar::AppTitleBar;
+pub use unlock::{UnlockEvent, UnlockScreen};
 
 use gpui_kit::component::kbd::Kbd;
 

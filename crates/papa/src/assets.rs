@@ -13,16 +13,22 @@ use gpui_kit::{AssetSource, SharedString};
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [
+        ArchiveRestore,
         BookDown,
+        DatabaseBackup,
         FileDown,
         Hash,
         Image,
         ImagePlus,
         Keyboard,
+        KeyRound,
         List,
+        Lock,
+        LockKeyhole,
         LogOut,
         NotebookPen,
         SearchX,
+        Shield,
         Trash,
         UserPlus
     ]

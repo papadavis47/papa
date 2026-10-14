@@ -278,6 +278,7 @@ fn action(shortcut: Shortcut) -> Box<dyn Action> {
         Shortcut::FocusEditor => Box::new(app::FocusEditor),
         Shortcut::ExportNote => Box::new(app::ExportNote),
         Shortcut::ExportNotes => Box::new(app::ExportNotes),
+        Shortcut::LockVault => Box::new(app::LockVault),
         Shortcut::ToggleSidebar => Box::new(app::ToggleSidebar),
         Shortcut::ToggleTheme => Box::new(app::ToggleTheme),
         Shortcut::OpenSettings => Box::new(app::OpenSettings),
@@ -299,6 +300,7 @@ fn icon(command: PaletteCommand) -> Icon {
             Shortcut::FocusEditor => IconName::FileText.into(),
             Shortcut::ExportNote => Lucide::FileDown.into(),
             Shortcut::ExportNotes => Lucide::BookDown.into(),
+            Shortcut::LockVault => Lucide::Lock.into(),
             Shortcut::ToggleSidebar => IconName::PanelLeftClose.into(),
             Shortcut::ToggleTheme => IconName::Moon.into(),
             Shortcut::OpenSettings => IconName::Settings.into(),
@@ -316,6 +318,9 @@ fn icon(command: PaletteCommand) -> Icon {
         }
         PaletteCommand::Open(_) => IconName::FileText.into(),
         PaletteCommand::ToggleVimMode => Lucide::Keyboard.into(),
+        PaletteCommand::ChangePassword | PaletteCommand::RemovePassword => Lucide::KeyRound.into(),
+        PaletteCommand::ExportBackup => Lucide::DatabaseBackup.into(),
+        PaletteCommand::RestoreBackup => Lucide::ArchiveRestore.into(),
     }
 }
 
@@ -414,6 +419,7 @@ mod tests {
                 open_note: None,
                 filter: NoteFilter::All,
                 vim_mode: false,
+                encrypted: false,
                 list_export: None,
             });
             let palette = host.read(cx).palette.clone();

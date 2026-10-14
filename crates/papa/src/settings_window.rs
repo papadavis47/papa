@@ -5,6 +5,10 @@
 //! the other writes it back through [`AppSettings::update`]. Writing
 //! notifies the global's observers, so the main window restyles at once
 //! and this one redraws with the new value.
+//!
+//! The vault's buttons (password, lock, backup) are different: the vault
+//! belongs to the main window, so they send it an action and bring it
+//! forward, and read the [`VaultStatus`] global it publishes.
 
 use std::path::PathBuf;
 
@@ -18,8 +22,9 @@ use gpui_kit::component::{
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Context, Entity, Global, IntoElement,
+    Action, AnyWindowHandle, App, AppContext as _, Context, Entity, Global, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, WindowBounds,
     WindowDecorations, WindowOptions, div, px, size,
 };
@@ -28,6 +33,10 @@ use papa_core::settings::{
     self as defaults, Appearance, ColorMode, Density, NoteMode, PaperSize, Settings as PapaSettings,
 };
 
+use crate::app::{
+    ChangePassword, ExportBackup, LockVault, RemovePassword, RestoreBackup, VaultStatus,
+    dispatch_to_main,
+};
 use crate::settings::AppSettings;
 use crate::theme;
 
@@ -159,6 +168,8 @@ impl SettingsPanel {
                 cx.notify();
             }),
         );
+        // The password buttons follow the vault: locked, encrypted or not.
+        subscriptions.push(cx.observe_global::<VaultStatus>(|_, cx| cx.notify()));
         // A theme file added to the themes folder joins the lists.
         subscriptions
             .push(cx.observe_global::<gpui_kit::component::ThemeRegistry>(|_, cx| cx.notify()));
@@ -233,7 +244,12 @@ impl Render for SettingsPanel {
                     Settings::new("settings")
                         .with_group_variant(GroupBoxVariant::Outline)
                         .sidebar_width(px(200.))
-                        .pages([self.appearance_page(cx), editor_page(), data_page()]),
+                        .pages([
+                            self.appearance_page(cx),
+                            editor_page(),
+                            privacy_page(),
+                            data_page(),
+                        ]),
                 ),
             )
     }
@@ -487,6 +503,106 @@ fn editor_page() -> SettingPage {
     )
 }
 
+fn privacy_page() -> SettingPage {
+    let auto_lock = SettingField::dropdown(
+        options(&[
+            ("0", "Never"),
+            ("1", "After 1 minute"),
+            ("5", "After 5 minutes"),
+            ("15", "After 15 minutes"),
+            ("30", "After 30 minutes"),
+            ("60", "After 1 hour"),
+        ]),
+        get(|s| s.privacy.auto_lock_minutes.to_string().into()),
+        set(|s, value: SharedString| {
+            s.privacy.auto_lock_minutes =
+                value.parse().unwrap_or(defaults::DEFAULT_AUTO_LOCK_MINUTES)
+        }),
+    )
+    .default_value(SharedString::from(
+        defaults::DEFAULT_AUTO_LOCK_MINUTES.to_string(),
+    ));
+
+    SettingPage::new("Privacy").icon(IconName::Eye).group(
+        SettingGroup::new()
+            .title("Vault")
+            .description(
+                "With a password, your vault is encrypted on disk: without the \
+                     password, its file is unreadable. Nobody can recover a forgotten password.",
+            )
+            .item(
+                SettingItem::new("Password", password_buttons())
+                    .description(
+                        "Set one to encrypt your vault. Change it, or remove it to \
+                             decrypt the vault.",
+                    )
+                    .keywords(["encrypt", "encryption", "lock", "security", "passphrase"]),
+            )
+            .item(
+                SettingItem::new(
+                    "Lock now",
+                    vault_button("lock-now", "Lock", &LockVault, |status| {
+                        status == VaultStatus::Open { encrypted: true }
+                    }),
+                )
+                .description("Close the vault until the password is typed again.")
+                .keywords(["lock", "close"]),
+            )
+            .item(
+                SettingItem::new("Auto-lock", auto_lock)
+                    .description(
+                        "Lock after this long without a key press or the mouse moving. \
+                             Only a vault with a password locks.",
+                    )
+                    .keywords(["idle", "timeout", "lock", "minutes"]),
+            ),
+    )
+}
+
+/// "Set password…", or "Change…" and "Remove…" once there is one.
+fn password_buttons() -> SettingField<SharedString> {
+    SettingField::render(move |_, _, cx| {
+        let status = *cx.global::<VaultStatus>();
+        let open = matches!(status, VaultStatus::Open { .. });
+        let encrypted = status == VaultStatus::Open { encrypted: true };
+        let button = |id: &'static str, label: &'static str, action: &'static dyn Action| {
+            Button::new(id)
+                .outline()
+                .small()
+                .label(label)
+                .disabled(!open)
+                .on_click(move |_, _, cx| dispatch_to_main(action, cx))
+        };
+        gpui_kit::component::h_flex()
+            .gap_2()
+            .when(!encrypted, |row| {
+                row.child(button("set-password", "Set password…", &ChangePassword))
+            })
+            .when(encrypted, |row| {
+                row.child(button("change-password", "Change…", &ChangePassword))
+                    .child(button("remove-password", "Remove…", &RemovePassword))
+            })
+    })
+}
+
+/// A button that runs `action` in the main window, enabled when `enabled`
+/// says so for the vault's state.
+fn vault_button(
+    id: &'static str,
+    label: &'static str,
+    action: &'static dyn Action,
+    enabled: fn(VaultStatus) -> bool,
+) -> SettingField<SharedString> {
+    SettingField::render(move |_, _, cx| {
+        Button::new(id)
+            .outline()
+            .small()
+            .label(label)
+            .disabled(!enabled(*cx.global::<VaultStatus>()))
+            .on_click(move |_, _, cx| dispatch_to_main(action, cx))
+    })
+}
+
 fn data_page() -> SettingPage {
     let vault = paths::vault_path().ok();
     let settings_file = paths::settings_path().ok();
@@ -522,6 +638,35 @@ fn data_page() -> SettingPage {
                     .description("The page size of exported notes and books.")
                     .keywords(["pdf", "print", "a4", "letter", "page"]),
             ),
+        )
+        .group(
+            SettingGroup::new()
+                .title("Backup")
+                .description(
+                    "A backup is one file with everything in your vault. Keep it on another \
+                     disk. A backup of an encrypted vault is encrypted too, with the \
+                     password the vault had that day.",
+                )
+                .item(
+                    SettingItem::new(
+                        "Back up",
+                        vault_button("export-backup", "Back up…", &ExportBackup, |status| {
+                            matches!(status, VaultStatus::Open { .. })
+                        }),
+                    )
+                    .description("Save a backup of your vault now.")
+                    .keywords(["backup", "export", "copy", "save"]),
+                )
+                .item(
+                    SettingItem::new(
+                        "Restore",
+                        vault_button("restore-backup", "Restore…", &RestoreBackup, |_| true),
+                    )
+                    .description(
+                        "Replace your vault with a backup. The vault it replaces is kept next to it.",
+                    )
+                    .keywords(["backup", "import", "restore", "recover"]),
+                ),
         )
         .group(
             SettingGroup::new()

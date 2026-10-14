@@ -1,26 +1,36 @@
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{App, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, div};
 
 use super::shortcut;
-use crate::app::{APP_CONTEXT, ToggleCommandPalette, ToggleSidebar, ToggleTheme};
+use crate::app::{APP_CONTEXT, LockVault, ToggleCommandPalette, ToggleSidebar, ToggleTheme};
 
 /// The custom title bar: sidebar toggle and app name on the left, the
-/// command palette and theme toggle on the right.
+/// command palette, the lock and the theme toggle on the right. While the
+/// vault is locked, only the name and the theme toggle show.
 ///
 /// The buttons dispatch the same actions as the keyboard shortcuts, so both
 /// paths run the same handler.
 #[derive(IntoElement)]
 pub struct AppTitleBar {
     sidebar_visible: bool,
+    locked: bool,
+    /// The vault has a password, so it can be locked.
+    encrypted: bool,
 }
 
 impl AppTitleBar {
-    pub fn new(sidebar_visible: bool) -> Self {
-        Self { sidebar_visible }
+    pub fn new(sidebar_visible: bool, locked: bool, encrypted: bool) -> Self {
+        Self {
+            sidebar_visible,
+            locked,
+            encrypted,
+        }
     }
 }
 
@@ -46,37 +56,53 @@ impl RenderOnce for AppTitleBar {
                 .child(
                     h_flex()
                         .gap_1()
-                        .child(
-                            Button::new("toggle-sidebar")
-                                .ghost()
-                                .small()
-                                .icon(sidebar_icon)
-                                .tooltip_with_action(
-                                    "Toggle sidebar",
-                                    &ToggleSidebar,
-                                    Some(APP_CONTEXT),
-                                )
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleSidebar), cx)
-                                }),
-                        )
+                        .when(!self.locked, |this| {
+                            this.child(
+                                Button::new("toggle-sidebar")
+                                    .ghost()
+                                    .small()
+                                    .icon(sidebar_icon)
+                                    .tooltip_with_action(
+                                        "Toggle sidebar",
+                                        &ToggleSidebar,
+                                        Some(APP_CONTEXT),
+                                    )
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(ToggleSidebar), cx)
+                                    }),
+                            )
+                        })
                         .child(div().text_sm().font_semibold().child("Papa")),
                 )
                 .child(
                     h_flex()
                         .gap_1()
-                        .child(
-                            Button::new("command-palette")
-                                .ghost()
-                                .small()
-                                .icon(IconName::Search)
-                                .label("Search")
-                                .children(shortcut(&ToggleCommandPalette, window))
-                                .tooltip("Find notes, children, labels and commands")
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleCommandPalette), cx)
-                                }),
-                        )
+                        .when(!self.locked, |this| {
+                            this.child(
+                                Button::new("command-palette")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Search)
+                                    .label("Search")
+                                    .children(shortcut(&ToggleCommandPalette, window))
+                                    .tooltip("Find notes, children, labels and commands")
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(ToggleCommandPalette), cx)
+                                    }),
+                            )
+                        })
+                        .when(self.encrypted, |this| {
+                            this.child(
+                                Button::new("lock")
+                                    .ghost()
+                                    .small()
+                                    .icon(Lucide::Lock)
+                                    .tooltip_with_action("Lock Papa", &LockVault, Some(APP_CONTEXT))
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(LockVault), cx)
+                                    }),
+                            )
+                        })
                         .child(
                             Button::new("toggle-theme")
                                 .ghost()

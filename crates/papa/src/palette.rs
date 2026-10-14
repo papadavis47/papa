@@ -26,6 +26,11 @@ pub enum PaletteCommand {
     ToggleLabel(LabelId),
     /// Turn the Vim mode setting on or off.
     ToggleVimMode,
+    /// Set a password, or change it.
+    ChangePassword,
+    RemovePassword,
+    ExportBackup,
+    RestoreBackup,
 }
 
 /// The commands that have a keyboard shortcut. `ui::command_palette` maps
@@ -42,6 +47,7 @@ pub enum Shortcut {
     FocusEditor,
     ExportNote,
     ExportNotes,
+    LockVault,
     ToggleSidebar,
     ToggleTheme,
     OpenSettings,
@@ -116,6 +122,8 @@ pub struct PaletteData<'a> {
     pub filter: NoteFilter,
     /// The Vim mode setting.
     pub vim_mode: bool,
+    /// The vault has a password.
+    pub encrypted: bool,
     /// What exporting the list makes ("Emma’s book", "3 notes"), or `None`
     /// when the list is empty.
     pub list_export: Option<&'a str>,
@@ -187,6 +195,27 @@ fn actions(data: &PaletteData) -> PaletteGroup {
         PaletteItem::new("Vim mode", C::ToggleVimMode)
             .keywords(["vi", "modal", "keys", "editor", "toggle"])
             .checked(data.vim_mode),
+        PaletteItem::new("Lock Papa", C::Shortcut(S::LockVault))
+            .keywords(["password", "close", "privacy"])
+            .enabled(open && data.encrypted),
+        PaletteItem::new(
+            if data.encrypted {
+                "Change the password…"
+            } else {
+                "Set a password…"
+            },
+            C::ChangePassword,
+        )
+        .keywords(["encrypt", "lock", "security", "privacy"])
+        .enabled(open),
+        PaletteItem::new("Remove the password…", C::RemovePassword)
+            .keywords(["decrypt", "security", "privacy"])
+            .enabled(open && data.encrypted),
+        PaletteItem::new("Back up the vault…", C::ExportBackup)
+            .keywords(["backup", "export", "copy", "save"])
+            .enabled(open),
+        PaletteItem::new("Restore a backup…", C::RestoreBackup)
+            .keywords(["backup", "import", "recover", "replace"]),
         PaletteItem::new("Settings…", C::Shortcut(S::OpenSettings)).keywords([
             "preferences",
             "options",
@@ -323,6 +352,7 @@ mod tests {
             open_note: None,
             filter: NoteFilter::All,
             vim_mode: false,
+            encrypted: false,
             list_export: Some("2 notes"),
         }
     }

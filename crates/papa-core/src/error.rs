@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::lock::MIN_PASSWORD_CHARS;
 use crate::model::MAX_NAME_CHARS;
 
 /// Everything that can go wrong in `papa-core`.
@@ -96,6 +97,44 @@ pub enum Error {
     /// requests have nowhere to go.
     #[error("the database thread has stopped")]
     StoreClosed,
+
+    #[error("the vault is locked; unlock it with its password")]
+    Locked,
+
+    #[error("that isn't the password")]
+    WrongPassword,
+
+    #[error("the password must be at least {MIN_PASSWORD_CHARS} characters long")]
+    PasswordTooShort,
+
+    /// An encrypted vault without its key file can't be opened, password or
+    /// not: the key file holds the vault's key.
+    #[error(
+        "the vault is encrypted, but its key file {} is missing. \
+         Put it back, or restore a backup",
+        .0.display()
+    )]
+    KeyFileMissing(PathBuf),
+
+    #[error("the vault's key file isn't valid: {0}")]
+    InvalidKeyFile(String),
+
+    #[error("couldn't get random bytes from the system: {0}")]
+    Random(getrandom::Error),
+
+    #[error("this vault is only in memory, so it can't be encrypted or backed up")]
+    InMemoryVault,
+
+    #[error("{} isn't a Papa backup", .0.display())]
+    NotABackup(PathBuf),
+
+    #[error("this backup was made by a newer version of Papa")]
+    BackupTooNew,
+
+    /// A checkpoint couldn't finish. Only Papa uses the vault, so this
+    /// shouldn't happen.
+    #[error("the vault is busy; try again")]
+    Busy,
 
     /// An error from the `turso` engine, shown as-is.
     #[error(transparent)]

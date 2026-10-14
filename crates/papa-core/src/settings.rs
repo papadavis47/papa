@@ -1,5 +1,5 @@
 //! The father's preferences: theme, fonts, text size, editor behaviour,
-//! PDF export.
+//! PDF export, auto-lock.
 //!
 //! They live in `settings.json` in the config folder ([`paths::settings_path`]),
 //! apart from the vault. The window can then look right before the vault
@@ -18,7 +18,7 @@
 
 use std::io::ErrorKind;
 use std::ops::RangeInclusive;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -41,12 +41,18 @@ pub const DEFAULT_LINE_HEIGHT: f32 = 1.6;
 pub const AUTOSAVE_DELAYS: RangeInclusive<u64> = 200..=5000;
 pub const DEFAULT_AUTOSAVE_DELAY: u64 = 500;
 
+/// How long Papa may sit idle before it locks a vault that has a password,
+/// in minutes. 0 is never.
+pub const AUTO_LOCK_MINUTES: RangeInclusive<u32> = 0..=24 * 60;
+pub const DEFAULT_AUTO_LOCK_MINUTES: u32 = 15;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub appearance: Appearance,
     pub editor: Editor,
     pub export: Export,
+    pub privacy: Privacy,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -157,6 +163,21 @@ pub enum PaperSize {
     Letter,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Privacy {
+    /// See [`AUTO_LOCK_MINUTES`]. Only a vault with a password locks.
+    pub auto_lock_minutes: u32,
+}
+
+impl Default for Privacy {
+    fn default() -> Self {
+        Self {
+            auto_lock_minutes: DEFAULT_AUTO_LOCK_MINUTES,
+        }
+    }
+}
+
 impl Settings {
     /// Reads the settings file. A missing file isn't an error: it gives the
     /// defaults, as on first launch.
@@ -190,11 +211,9 @@ impl Settings {
         json
     }
 
-    /// Writes the settings file, creating its folder if needed.
-    ///
-    /// The JSON goes to a temporary file first, which then replaces the old
-    /// one. A rename within a folder is atomic, so a crash halfway through
-    /// leaves either the old file or the new one, never half of each.
+    /// Writes the settings file, creating its folder if needed. A crash
+    /// halfway through leaves the old file or the new one, never half of
+    /// each (see [`write_atomic`](crate::files::write_atomic)).
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|source| Error::CreateDir {
@@ -202,16 +221,7 @@ impl Settings {
                 source,
             })?;
         }
-        let temp = temp_path(path);
-        let write_error = |reason| Error::WriteFile {
-            path: path.to_owned(),
-            reason,
-        };
-        std::fs::write(&temp, self.to_json()).map_err(write_error)?;
-        std::fs::rename(&temp, path).map_err(|reason| {
-            let _ = std::fs::remove_file(&temp);
-            write_error(reason)
-        })
+        crate::files::write_atomic(path, self.to_json().as_bytes())
     }
 
     /// The same settings with every value in range: numbers clamped, blank
@@ -237,6 +247,8 @@ impl Settings {
         }
         let delay = &mut self.editor.autosave_delay_ms;
         *delay = (*delay).clamp(*AUTOSAVE_DELAYS.start(), *AUTOSAVE_DELAYS.end());
+        let auto_lock = &mut self.privacy.auto_lock_minutes;
+        *auto_lock = (*auto_lock).min(*AUTO_LOCK_MINUTES.end());
         self
     }
 }
@@ -248,13 +260,6 @@ fn clamp(value: f32, range: RangeInclusive<f32>, default: f32) -> f32 {
     } else {
         value.clamp(*range.start(), *range.end())
     }
-}
-
-/// `settings.json.tmp` next to `settings.json`.
-fn temp_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_owned();
-    name.push(".tmp");
-    path.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -281,6 +286,7 @@ mod tests {
         settings.editor.open_notes_in = NoteMode::Edit;
         settings.editor.vim_mode = true;
         settings.export.paper = PaperSize::Letter;
+        settings.privacy.auto_lock_minutes = 0;
 
         settings.save(&path).unwrap();
 
@@ -339,7 +345,8 @@ mod tests {
         let settings = Settings::from_json(
             r#"{
                 "appearance": { "text_size": 300, "line_height": 0.5, "ui_font": "  ", "dark_theme": "" },
-                "editor": { "autosave_delay_ms": 0 }
+                "editor": { "autosave_delay_ms": 0 },
+                "privacy": { "auto_lock_minutes": 100000 }
             }"#,
         )
         .unwrap();
@@ -349,6 +356,7 @@ mod tests {
         assert_eq!(settings.appearance.ui_font, None);
         assert_eq!(settings.appearance.dark_theme, DEFAULT_DARK_THEME);
         assert_eq!(settings.editor.autosave_delay_ms, *AUTOSAVE_DELAYS.start());
+        assert_eq!(settings.privacy.auto_lock_minutes, *AUTO_LOCK_MINUTES.end());
     }
 
     #[test]

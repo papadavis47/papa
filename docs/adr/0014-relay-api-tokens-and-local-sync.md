@@ -1,6 +1,6 @@
 # 0014. The relay: hashed secrets, two provisioning backends, and a local sync server for development
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-14
 
 ## Context

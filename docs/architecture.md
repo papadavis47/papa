@@ -239,6 +239,7 @@ The vault is one Turso (SQLite-format) file: `vault.db` in the OS data directory
 ### Running it locally
 
 ```sh
+mkdir -p dev-sync                                            # tursodb won't create it
 tursodb --sync-server 127.0.0.1:8080 --sync-dir dev-sync     # Turso's CLI, v0.8.2
 PAPA_RELAY_LOCAL_SYNC_DIR=dev-sync cargo run -p papa-relay   # listens on 127.0.0.1:8787
 cargo run -p papa-relay -- admin invite create "Me"           # prints an invite code

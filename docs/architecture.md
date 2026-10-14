@@ -20,7 +20,8 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 
 ```diagram
 ┌─ PapaApp (Entity, Render) ─────────────────────────────────────────┐
-│ owns: Vault (Opening / Open(Store) / Failed), children, labels,    │
+│ owns: Vault (Opening / Locked / Open(Store) / Failed), children,   │
+│       labels,                                                      │
 │       notes (the list), Selection (filter + open note), search box │
 │                                                                    │
 │ AppTitleBar ── sidebar toggle · "Papa" · ⌘K search · theme toggle   │
@@ -36,18 +37,21 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 │                             VimLayer while the setting is on       │
 │                └─ Gallery   (Entity) thumbnail strip; adds images  │
 │                             from the picker, a drop or a paste     │
+│ UnlockScreen ─ (Entity) in place of the panes while locked         │
 │ StatusBar  ── Vim mode (when on) · vault path · "Exporting…" ·     │
 │               theme name                                           │
 │ Lightbox   ── (Entity, owned by Gallery) one image over the whole  │
 │               window; key context "Lightbox"                       │
 │ CommandPalette ── (Entity) ⌘K over everything; key context         │
 │               "CommandPalette"; runs actions, emits Run(command)   │
-│ dialogs    ── add/edit child, add/rename label, confirm delete     │
+│ dialogs    ── add/edit child, add/rename label, confirm delete,    │
+│               set/change/remove password, restore a backup         │
 └────────────────────────────────────────────────────────────────────┘
 
 ┌─ SettingsPanel (Entity, its own window) ───────────────────────────┐
-│ gpui-kit Settings: Appearance · Editor · Data, with search         │
-│ fields read and write the AppSettings global                       │
+│ gpui-kit Settings: Appearance · Editor · Privacy · Data, search    │
+│ fields read and write the AppSettings global; vault buttons send   │
+│ actions to the main window and read the VaultStatus global         │
 └────────────────────────────────────────────────────────────────────┘
 
  Globals: AppSettings ──observed by──▶ theme.rs ──rebuilds──▶ Theme
@@ -84,7 +88,7 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 - **The UI shows copies of the vault's rows.** After each change `PapaApp` reloads the affected list from the store, so the screen always matches what's stored. Failures appear as notifications and leave the state unchanged. Assigning a child or label is the one optimistic update: the checkbox flips at once, and the stored note replaces it when it arrives.
 - **Actions** are the single entry point for commands. A keyboard shortcut, a button and a palette row dispatch the same action:
   - App-level actions (`Quit`, `ToggleTheme`, `OpenSettings`) are handled with `cx.on_action`, because they act on global state.
-  - View-level actions (`ToggleSidebar`, `NewNote`, `TogglePreview`, `FocusSearch`, `AddImages`, `ToggleCommandPalette`, `FocusSidebar`/`FocusNoteList`/`FocusEditor`, and moving through filters and notes) are handled by `PapaApp`, because they change its state.
+  - View-level actions (`ToggleSidebar`, `NewNote`, `TogglePreview`, `FocusSearch`, `AddImages`, `ToggleCommandPalette`, `FocusSidebar`/`FocusNoteList`/`FocusEditor`, `LockVault`, `ChangePassword`, `RemovePassword`, `ExportBackup`, `RestoreBackup`, and moving through filters and notes) are handled by `PapaApp`, because they change its state.
   - The lightbox's actions (`CloseLightbox`, `NextImage`, `PreviousImage`) are handled by the `Lightbox` entity.
 - **Key contexts** scope bindings:
   - `PapaApp` bindings work anywhere in the window.
@@ -100,6 +104,13 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
   - **The lightbox** is the last child of `PapaApp`'s root, so it covers the panes; gpui-kit's dialogs and notifications still draw above it, which the "Delete this image?" confirmation needs. The thumbnail is drawn under the full-size image, because GPUI waits 200 ms before showing an `img`'s loading placeholder. The full-size image has an element id: GPUI keeps a GIF's current frame in element state, so without one a GIF wouldn't animate.
   - **The strip** scrolls sideways with GPUI's `overflow_x_scroll`, which turns a mouse wheel's vertical turns into sideways scrolling, plus gpui-kit's scrollbar sharing its `ScrollHandle`.
 - **PDF export** (`app/export.rs`, with the decisions in plain Rust in `export.rs`): ⌘P exports the open note, ⌘⇧P the notes in the list. When the list shows a child and isn't searched, that's the child's whole book; otherwise it's the notes a label or search picked out. A book reads oldest first, after a title page and contents. `PapaApp` asks where to save (`cx.prompt_for_new_path`), reads the notes and their display-size photos from the store, then lays out the PDF and writes it on the background pool. Linux desktops without the file-chooser portal have no save dialog; the PDF then goes to the Documents folder under a name that's free. One export runs at a time, shown in the status bar; a notification offers to open the result.
+- **The vault lock** (`app/lock.rs`, see [ADR 0013](adr/0013-vault-encryption-key-file-and-backups.md)):
+  - **At startup** the vault file's first bytes say whether it's encrypted. An encrypted vault shows the `UnlockScreen` in place of the panes, with nothing of the vault loaded; the password unlocks it on the database thread, where Argon2id takes its moment.
+  - **Locking** (⌘L, the lock in the title bar, or auto-lock) saves the open note, then `Store::close` stops the database thread, and `PapaApp` drops the editor, the lists, the selection and the search. `generation` counts opened vaults, so a store answer for a closed one is ignored.
+  - **Auto-lock** counts from the last key press (`cx.observe_keystrokes`, any window), click, scroll or mouse move in the main window. A task checks every 5 s against `privacy.auto_lock_minutes`.
+  - **Password dialogs** (`PasswordForm`) stay open and busy while the vault works, then close or show the error (a wrong current password). Setting or removing the password rewrites the vault, which can take a moment.
+  - **The Settings window** can't reach the store, which belongs to the main window: its Privacy and Backup buttons dispatch actions there (`dispatch_to_main`) and bring it forward. `PapaApp` publishes a `VaultStatus` global (unavailable, locked, open and encrypted or not) that the Settings window observes to show the right buttons.
+- **Backups** (`app/backup.rs`): "Back up the vault…" asks where to save (or, with no save dialog, uses Documents, as PDF export does) and the database thread writes the file. "Restore a backup…" reads the file's header, asks to confirm (and for the backup's password if it's encrypted), checks a copy while the vault stays open, and only then closes the vault, swaps the files and opens the restored one. It works from the lock screen too.
 - **Icons:** gpui-kit's default asset source embeds only the components' icons. `assets.rs` adds the extra Lucide icons the app uses with `icon_assets!` and combines both into one `AssetSource`.
 - **Window chrome:** the app draws its own title bar. On Linux it asks for client-side decorations so the compositor doesn't add a second one.
 - **Settings and themes** (see [ADR 0010](adr/0010-settings-file-and-themes.md)):
@@ -120,6 +131,7 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 | ⌘E | Switch the note between Edit and Preview |
 | ⌘F | Jump to search; Esc clears it |
 | ⌘⇧O | Add images to the open note (⌘⇧I is GPUI's inspector in debug builds) |
+| ⌘L | Lock Papa (when the vault has a password) |
 | ⌘P | Export the open note to PDF |
 | ⌘⇧P | Export the notes in the list to PDF (a child's book when the list shows that child) |
 | ⌘K | Command palette: run a command, go to a child or label, open a note, assign the open note |
@@ -139,6 +151,8 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 | What | Where (Linux / macOS) | Override |
 |---|---|---|
 | Vault | `~/.local/share/papa/vault.db` / `~/Library/Application Support/papa/vault.db` | `PAPA_VAULT` (a file) |
+| Vault key (encrypted vaults only) | `vault.key` next to the vault | `PAPA_VAULT` |
+| Vault before the last restore | `vault-before-restore.db` (and `.key`) next to the vault | `PAPA_VAULT` |
 | Settings | `~/.config/papa/settings.json` / `~/Library/Application Support/papa/settings.json` | `PAPA_CONFIG_DIR` (a folder) |
 | Your themes | `themes/` next to `settings.json` | `PAPA_CONFIG_DIR` |
 
@@ -166,7 +180,13 @@ The vault is one Turso (SQLite-format) file: `vault.db` in the OS data directory
 - **Deleted notes become tombstones:** the text is wiped, the links removed and `deleted_at` set, as PLAN.md §4 asks. Sharing (Phase 11) can then tell a child's app the note is gone. Every query skips them, helped by a partial index.
 - **Search** runs in Rust on the database thread: every word must appear in the title or body, ignoring case (Unicode-aware, unlike SQL's `lower()`). Turso's experimental full-text search was evaluated and deferred; see [ADR 0008](adr/0008-note-search-without-turso-fts.md).
 - **Images** are stored in the vault, one row per version: thumbnail, display copy and the untouched original. Turso reads a row's whole record even when a query asks for one column, so the bytes can't share a row with anything a list reads. An index on `image (note_id, id)` steers Turso's planner away from scanning the bytes; a test checks the plans. See [ADR 0009](adr/0009-images-stored-in-the-vault.md).
-- **The write-ahead log:** Turso leaves recent commits in `vault.db-wal` after the app quits; it doesn't checkpoint on close like SQLite does. Nothing is lost, but a backup must checkpoint first or copy both files (Phase 9).
+- **The write-ahead log:** Turso leaves recent commits in `vault.db-wal` after the app quits; it doesn't checkpoint on close like SQLite does. Nothing is lost. `Store::close`, backups and rewrites run `PRAGMA wal_checkpoint(TRUNCATE)` first, so the vault file alone holds everything.
+- **Encryption at rest** (optional; [ADR 0013](adr/0013-vault-encryption-key-file-and-backups.md)), in `papa-core::lock` and `store/rekey.rs`:
+  - Turso encrypts every page with AEGIS-256 under a random vault key. The password never encrypts the vault itself: Argon2id (64 MiB, 3 passes) turns it into a key that wraps the vault key with XChaCha20-Poly1305. The result is stored in `vault.key`.
+  - A wrong password fails on the wrap's authentication tag. Changing the password rewrites only `vault.key`.
+  - Setting the first password or removing it copies every row into a new file, encrypted or plain, which replaces the vault with one atomic rename. A crash leaves the old vault or the new one, never a mix.
+  - Passwords and keys live in `Zeroizing`/`ZeroizeOnDrop` types, overwritten when dropped.
+- **Backups** (`papa-core::backup`): one `.papabackup` file, a JSON header line (date, schema version, the key file if encrypted) and then the vault file byte for byte, copied on the database thread right after a checkpoint. Restoring copies and checks the backup next to the vault (it opens, migrates, and every row reads back) before anything is replaced; the replaced vault is kept as `vault-before-restore.db`.
 
 | Table | Columns | Since |
 |---|---|---|
@@ -209,8 +229,8 @@ The vault is one Turso (SQLite-format) file: `vault.db` in the OS data directory
 - **GPUI's background thread pool:** CPU-heavy work handed off with `cx.background_spawn`: preparing images, laying out and writing PDFs, and GPUI's own image decoding. Saving `settings.json` runs there too.
 - **`papa-store` thread:** owns the database connection and runs a single-threaded tokio runtime (tokio is also what `turso`'s sync needs later). It exits when the last `Store` handle is dropped.
 
-## Security model (planned)
+## Security model
 
-- Optional encryption at rest for the local vault, keyed from the father's password (Argon2id).
+- Optional encryption at rest for the local vault (Turso, AEGIS-256), with its key wrapped under the father's password (Argon2id + XChaCha20-Poly1305). Locking closes the vault and drops its key. Done in Phase 9; the rest is planned.
 - End-to-end encryption for everything in the cloud (XChaCha20-Poly1305). The relay and Turso only see ciphertext, ids and timestamps.
 - Tokens are short-lived and scoped to a single database. No admin or Platform credentials ship in the app.

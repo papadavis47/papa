@@ -2,7 +2,7 @@
 
 A private, local-first journal for fathers. A father keeps a profile for each of his children and writes notes about them. He can choose to share some notes with a child, who opens them in the same app. Father and child can message each other.
 
-> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–8 are done.
+> Status: **agreed**. Open: the father's cloud backup design and the Turso dev setup (section 10). Phases 0–8 are done; Phase 9 (vault lock & backup) is in review.
 
 ---
 

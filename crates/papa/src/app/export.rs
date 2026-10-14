@@ -29,6 +29,7 @@ use papa_pdf::Photo;
 
 use super::{ExportNote, ExportNotes, PapaApp, Vault};
 use crate::export::{self, Scope};
+use crate::open;
 use crate::settings::AppSettings;
 use crate::ui::sentence;
 
@@ -197,7 +198,7 @@ fn exported(
                     Button::new("open-pdf")
                         .primary()
                         .label("Open")
-                        .on_click(move |_, _, cx| cx.open_with_system(&path))
+                        .on_click(move |_, _, cx| open::open(&path, cx))
                 })
         }
         Err(err) => Notification::error(sentence(format!("{err:#}")))

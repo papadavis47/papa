@@ -2,7 +2,7 @@
 
 A private, local-first journal for fathers. A father keeps a profile for each of his children and writes notes about them. He can choose to share some notes with a child, who opens them in the same app. Father and child can message each other.
 
-> Status: **agreed**. Open: the father's cloud backup design (section 10). Phases 0–9 are done; Phase 10 (relay server) is in review.
+> Status: **agreed**. Open: the father's cloud backup design (section 10). Phases 0–10 are done.
 
 ---
 
@@ -295,7 +295,7 @@ Each phase ends with something runnable. Each one has a short "what you'll learn
 | 7 ✅ | **Vim mode** | Normal/Insert/Visual, the motions and edits listed above, status-bar indicator, list navigation | state machines with enums, key event handling, a test-driven parser |
 | 8 ✅ | **PDF export** | `papa-pdf`: Markdown → Typst → PDF, with images; export one note, a selection or a child's whole book | the `typst` `World` trait, AST walking, crate isolation |
 | 9 ✅ | **Vault lock & backup** | Optional at-rest encryption, password unlock screen, auto-lock, export/import backup | Argon2id, zeroize, Turso encryption |
-| 10 | **Relay server** | `papa-relay`: father accounts, share-DB provisioning via the Turso Platform API, token minting; local dev mode with a local Turso and no cloud | axum, tokio, HTTP API design, `papa-proto` shared types |
+| 10 ✅ | **Relay server** | `papa-relay`: father accounts, share-DB provisioning via the Turso Platform API, token minting; local dev mode with a local Turso and no cloud | axum, tokio, HTTP API design, `papa-proto` shared types |
 | 11 | **Sharing (father side)** | Generate/rotate/revoke keys, encrypted projection of shared notes into `shares/<child>.db`, push via turso sync | key derivation, AEAD, idempotent sync design |
 | 12 | **Child mode** | Onboarding choice, sign in, pull + decrypt, read-only UI, PDF export | the app's two "modes" as types, offline caching |
 | 13 | **Messaging** | Chat per child both ways, polling, unread badges, read receipts | append-only sync, optimistic UI |
@@ -345,7 +345,7 @@ Phases 0–9 give a complete, useful, **offline** app before any cloud work star
 - **Father's encrypted cloud backup:** wanted, scheduled after Phase 13. The design is still open (an encrypted snapshot is the likely first step).
 
 **Settled in Phase 10**
-- **Turso dev setup:** sync runs fully locally. `tursodb --sync-server 127.0.0.1:8080 --sync-dir dev-sync` serves one database per `/db/<name>` and creates it on first sync; the relay's local mode points at it. No Turso Cloud account is needed until deployment ([ADR 0014](docs/adr/0014-relay-api-tokens-and-local-sync.md)).
+- **Turso dev setup:** sync runs fully locally. `tursodb --sync-server 127.0.0.1:8080 --sync-dir dev-sync` (the folder must exist) serves one database per `/db/<name>` and creates it on first sync; the relay's local mode points at it. No Turso Cloud account is needed until deployment ([ADR 0014](docs/adr/0014-relay-api-tokens-and-local-sync.md)).
 
 ---
 

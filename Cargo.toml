@@ -15,6 +15,9 @@ publish = false
 papa-core = { path = "crates/papa-core" }
 papa-proto = { path = "crates/papa-proto" }
 papa-pdf = { path = "crates/papa-pdf" }
+# Pre-1.0, so pinned exactly (ADR 0003), in one place for the vault and
+# the relay.
+turso = { version = "=0.8.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -21,6 +21,9 @@
 *.db-journal
 /shares/
 /vault/
+# The relay's local sync server folder and admin socket (Phase 10)
+/dev-sync/
+*.admin.sock
 
 # Editors and OS
 .DS_Store

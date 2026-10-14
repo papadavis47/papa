@@ -37,10 +37,10 @@ thiserror = "2.0.21"
 # Runs the database actor: a single-threaded runtime on its own thread, plus
 # the channels the UI uses to talk to it.
 tokio = { version = "1.53.2", default-features = false, features = ["rt", "sync"] }
-# Pre-1.0, so pinned exactly (ADR 0003). Default features are off: they would
-# install mimalloc as the global allocator for the whole app, and pull in
-# full-text search before Phase 3 needs it.
-turso = { version = "=0.8.2", default-features = false }
+# Pinned in the workspace. Default features are off: they would install
+# mimalloc as the global allocator for the whole app, and pull in full-text
+# search before Phase 3 needs it.
+turso.workspace = true
 uuid = { version = "1.28.0", features = ["v7"] }
 # Overwrites passwords and keys when they're dropped.
 zeroize = { version = "1.9", features = ["derive"] }

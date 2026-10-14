@@ -8,6 +8,7 @@
 //! When Papa sees it is running with a snap's environment, it starts
 //! `xdg-open` itself, with the snap's additions taken out.
 
+#[cfg(any(target_os = "linux", test))]
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
 #[cfg(target_os = "linux")]
@@ -38,6 +39,9 @@ pub fn open(path: &Path, cx: &App) {
 /// `vars` without what the snap installed at `snap` (`/snap/ghostty/820`)
 /// added: its `SNAP*` variables, and any path inside the snap. Lists of
 /// paths (`XDG_DATA_DIRS`, `PATH`) keep their other entries.
+///
+/// Snaps are Linux-only; elsewhere this exists only for its tests.
+#[cfg(any(target_os = "linux", test))]
 fn without_snap(
     vars: impl IntoIterator<Item = (OsString, OsString)>,
     snap: &OsStr,

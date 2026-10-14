@@ -8,6 +8,33 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Father passwords, hashed to PHC strings (`$argon2id$v=19$...`).
+argon2 = "0.6.0"
+# The HTTP server: routing, extractors, JSON bodies.
+axum = { version = "0.8.9", features = ["macros"] }
+# Session tokens, invite codes and share names, straight from the OS.
+getrandom = "0.4"
+hex = "0.4.3"
+papa-proto.workspace = true
+# Talks to the Turso Platform API. rustls with ring, which the app already
+# builds, rather than OpenSSL or reqwest 0.13's aws-lc (needs CMake).
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+# Hashes of session tokens, invite codes and child auth keys.
+sha2 = "0.10.9"
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
+# Request logs.
+tower-http = { version = "0.7.1", features = ["trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# The relay's own database: accounts, invites, sessions, shares.
+turso.workspace = true
+uuid = { version = "1.28.0", features = ["v7"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

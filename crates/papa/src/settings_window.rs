@@ -570,7 +570,7 @@ fn open_folder_button(dir: Option<PathBuf>) -> SettingField<SharedString> {
             .on_click(move |_, _, cx| {
                 if let Some(dir) = &dir {
                     match std::fs::create_dir_all(dir) {
-                        Ok(()) => cx.open_with_system(dir),
+                        Ok(()) => crate::open::open(dir, cx),
                         Err(err) => crate::ui::notify_error("Couldn't open the folder", err, cx),
                     }
                 }

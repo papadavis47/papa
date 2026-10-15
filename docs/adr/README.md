@@ -18,5 +18,6 @@ Short records of significant decisions: the context, what we chose, and what it 
 | [0012](0012-vim-mode-as-a-keystroke-layer.md) | Vim mode is a keystroke layer over the text field, with a pure state machine | Accepted |
 | [0013](0013-vault-encryption-key-file-and-backups.md) | Vault encryption with a wrapped key, and backups as one file | Accepted |
 | [0014](0014-relay-api-tokens-and-local-sync.md) | The relay: hashed secrets, two provisioning backends, and a local sync server for development | Accepted |
+| [0015](0015-sharing-keys-and-idempotent-projection.md) | Sharing: access keys, sealed rows, and a projection that is safe to repeat | Proposed |
 
 Template: copy [0000-template.md](0000-template.md).

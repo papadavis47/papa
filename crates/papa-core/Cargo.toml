@@ -19,6 +19,9 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["
 dirs = "7.0.0"
 # Random vault keys, salts and nonces, straight from the OS.
 getrandom = "0.4"
+# Splits the key derived from a child's access key into two that can't be
+# computed from each other: one for the relay, one for decrypting.
+hkdf = "0.12.4"
 # The key file's salt, nonce and wrapped key as hex, and the vault key in the
 # form Turso takes it.
 hex = { version = "0.4.3", features = ["serde"] }
@@ -31,23 +34,32 @@ jiff = "0.2.38"
 # settings.json: readable, hand-editable preferences.
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+# The relay's request and response types.
+papa-proto.workspace = true
+# Talks to the relay. TLS uses the process-wide crypto provider that
+# `tls::init` installs, the same one Turso's sync client uses (see there).
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls-native-roots-no-provider"] }
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 # Content hashes of images, so attaching the same photo twice is a no-op.
 sha2 = "0.10.9"
 thiserror = "2.0.21"
 # Runs the database actor: a single-threaded runtime on its own thread, plus
 # the channels the UI uses to talk to it.
-tokio = { version = "1.53.2", default-features = false, features = ["rt", "sync"] }
+tokio = { version = "1.53.2", default-features = false, features = ["rt", "sync", "time"] }
 # Pinned in the workspace. Default features are off: they would install
 # mimalloc as the global allocator for the whole app, and pull in full-text
-# search before Phase 3 needs it.
-turso.workspace = true
+# search before Phase 3 needs it. `sync` pushes shared notes to the cloud
+# (Phase 11).
+turso = { workspace = true, features = ["sync"] }
 uuid = { version = "1.28.0", features = ["v7"] }
 # Overwrites passwords and keys when they're dropped.
 zeroize = { version = "1.9", features = ["derive"] }
 
 [dev-dependencies]
+# A real relay, in-process, for the sharing tests.
+papa-relay = { path = "../papa-relay" }
 tempfile = "3.27.0"
-tokio = { version = "1.53.2", default-features = false, features = ["rt", "macros"] }
+tokio = { version = "1.53.2", default-features = false, features = ["rt", "macros", "net"] }
 
 [lints]
 workspace = true

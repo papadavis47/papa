@@ -17,6 +17,16 @@ pub fn vault_path() -> Result<PathBuf> {
     choose_vault_path(std::env::var_os(VAULT_ENV), dirs::data_dir())
 }
 
+/// Where the replicas of shared children's databases live: `shares/` next
+/// to the vault (`shares/<child id>.db`). They hold only ciphertext, and can
+/// be rebuilt from the vault at any time.
+pub fn shares_dir(vault: &Path) -> PathBuf {
+    vault
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("shares")
+}
+
 /// Overrides the config folder, which holds `settings.json` and `themes/`.
 /// Like [`VAULT_ENV`], it keeps development away from the real settings.
 pub const CONFIG_ENV: &str = "PAPA_CONFIG_DIR";

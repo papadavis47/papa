@@ -57,8 +57,28 @@ install_rust() {
   fi
 }
 
+# Turso's CLI: `tursodb --sync-server` for the relay's local mode and the
+# sync tests. Pinned to the `turso` crate's version, checksum checked.
+install_tursodb() {
+  local bin="$HOME/.local/bin/tursodb"
+  if [[ -x "$bin" ]] && "$bin" --version | grep -q "0.8.2"; then
+    echo "tursodb 0.8.2 present"
+    return
+  fi
+  local triple=x86_64-unknown-linux-gnu
+  local archive="turso_cli-$triple.tar.xz"
+  local tmp
+  tmp="$(mktemp -d)"
+  curl -fsSL -o "$tmp/$archive" "https://github.com/tursodatabase/turso/releases/download/v0.8.2/$archive"
+  echo "1a12393fdb1fc36ef4c0339609b2652d6a0f7bb4a5f6c08da4afe1d364422d18  $tmp/$archive" | sha256sum -c -
+  mkdir -p "$HOME/.local/bin"
+  tar -xJf "$tmp/$archive" --strip-components=1 -C "$HOME/.local/bin" "turso_cli-$triple/tursodb"
+  rm -rf "$tmp"
+}
+
 step "apt packages" install_apt_packages
 step "rust toolchain" install_rust
+step "tursodb" install_tursodb
 
 # rustup's installer cannot update this running script's environment.
 # shellcheck disable=SC1091

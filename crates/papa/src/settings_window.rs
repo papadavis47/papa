@@ -34,8 +34,8 @@ use papa_core::settings::{
 };
 
 use crate::app::{
-    ChangePassword, ExportBackup, LockVault, RemovePassword, RestoreBackup, VaultStatus,
-    dispatch_to_main,
+    AccountStatus, ChangePassword, CreateAccount, ExportBackup, LockVault, RemovePassword,
+    RestoreBackup, SignIn, SignOut, SyncNow, VaultStatus, dispatch_to_main,
 };
 use crate::settings::AppSettings;
 use crate::theme;
@@ -170,6 +170,8 @@ impl SettingsPanel {
         );
         // The password buttons follow the vault: locked, encrypted or not.
         subscriptions.push(cx.observe_global::<VaultStatus>(|_, cx| cx.notify()));
+        // The account buttons follow signing in and out.
+        subscriptions.push(cx.observe_global::<AccountStatus>(|_, cx| cx.notify()));
         // A theme file added to the themes folder joins the lists.
         subscriptions
             .push(cx.observe_global::<gpui_kit::component::ThemeRegistry>(|_, cx| cx.notify()));
@@ -248,6 +250,7 @@ impl Render for SettingsPanel {
                             self.appearance_page(cx),
                             editor_page(),
                             privacy_page(),
+                            sharing_page(),
                             data_page(),
                         ]),
                 ),
@@ -600,6 +603,81 @@ fn vault_button(
             .label(label)
             .disabled(!enabled(*cx.global::<VaultStatus>()))
             .on_click(move |_, _, cx| dispatch_to_main(action, cx))
+    })
+}
+
+fn sharing_page() -> SettingPage {
+    SettingPage::new("Sharing")
+        .icon(IconName::Globe)
+        .resettable(false)
+        .group(
+            SettingGroup::new()
+                .title("Papa account")
+                .description(
+                    "Sharing notes with your children goes through a Papa server. Every \
+                     shared note is encrypted on this computer first: the server only ever \
+                     sees ciphertext, and never your labels or unshared notes.",
+                )
+                .item(
+                    SettingItem::new("Account", account_buttons())
+                        .description(
+                            "Accounts are by invitation. Your children sign in with your email \
+                             and the key Papa makes for each of them.",
+                        )
+                        .keywords(["sign in", "log in", "sign up", "server", "relay", "email"]),
+                )
+                .item(
+                    SettingItem::new(
+                        "Sync",
+                        SettingField::render(|_, _, cx| {
+                            let status = cx.global::<AccountStatus>();
+                            Button::new("sync-now")
+                                .outline()
+                                .small()
+                                .label("Sync now")
+                                .disabled(status.signed_in.is_none() || status.shares == 0)
+                                .on_click(|_, _, cx| dispatch_to_main(&SyncNow, cx))
+                        }),
+                    )
+                    .description(
+                        "Papa syncs shared notes a few seconds after each change, and when \
+                         it opens. To share with a child, right-click them in the sidebar \
+                         and choose Sharing….",
+                    )
+                    .keywords(["sync", "share", "cloud", "upload"]),
+                ),
+        )
+}
+
+/// "Sign in…" and "Create account…", or who's signed in and "Sign out".
+fn account_buttons() -> SettingField<SharedString> {
+    SettingField::render(move |_, _, cx| {
+        let status = cx.global::<AccountStatus>().clone();
+        let button = |id: &'static str, label: &'static str, action: &'static dyn Action| {
+            Button::new(id)
+                .outline()
+                .small()
+                .label(label)
+                .disabled(!status.vault_open)
+                .on_click(move |_, _, cx| dispatch_to_main(action, cx))
+        };
+        gpui_kit::component::h_flex()
+            .gap_2()
+            .when(status.signed_in.is_none(), |row| {
+                row.child(button("sign-in", "Sign in…", &SignIn))
+                    .child(button("create-account", "Create account…", &CreateAccount))
+            })
+            .when_some(status.signed_in.clone(), |row, (email, server)| {
+                row.child(
+                    v_flex().items_end().text_sm().child(email).child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(server),
+                    ),
+                )
+                .child(button("sign-out", "Sign out", &SignOut))
+            })
     })
 }
 

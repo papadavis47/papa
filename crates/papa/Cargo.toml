@@ -19,6 +19,9 @@ gpui-kit = "0.7"
 # Formats note dates in the local time zone.
 jiff = "0.2.38"
 papa-core.workspace = true
+# The relay's wire types: `Secret`, for passwords and invite codes typed in
+# the account dialogs.
+papa-proto.workspace = true
 # Exports notes to PDF. It brings in Typst, which is big; keeping it in
 # its own crate means papa-core and the relay don't build it.
 papa-pdf.workspace = true

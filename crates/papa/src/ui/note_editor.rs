@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
@@ -68,6 +68,9 @@ pub struct NoteEditor {
     /// For the children and labels the note can be assigned to.
     children: Rc<Vec<Child>>,
     labels: Rc<Vec<Label>>,
+    /// Children whose sharing is on: the note can be shared with those it's
+    /// about.
+    shared_children: Rc<Vec<ChildId>>,
     title: Entity<InputState>,
     body: Entity<TextareaState>,
     /// The note's images, under the body.
@@ -125,6 +128,7 @@ impl NoteEditor {
             note: None,
             children: Rc::default(),
             labels: Rc::default(),
+            shared_children: Rc::default(),
             title,
             body,
             gallery,
@@ -254,6 +258,21 @@ impl NoteEditor {
         }
         self.children = children;
         self.labels = labels;
+        cx.notify();
+    }
+
+    /// Updates which children the note can be shared with.
+    pub fn set_shared_children(&mut self, shared: Rc<Vec<ChildId>>, cx: &mut Context<Self>) {
+        self.shared_children = shared;
+        cx.notify();
+    }
+
+    /// Sharing with `child` stopped: the vault no longer shares any note
+    /// with them, this one included.
+    pub fn forget_share(&mut self, child: ChildId, cx: &mut Context<Self>) {
+        if let Some(note) = &mut self.note {
+            note.shared_with.retain(|id| *id != child);
+        }
         cx.notify();
     }
 
@@ -530,6 +549,19 @@ impl NoteEditor {
         );
     }
 
+    /// Lets the child read the note, or stops.
+    pub fn toggle_shared(&mut self, id: ChildId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(note) = &mut self.note else { return };
+        toggle(&mut note.shared_with, id);
+        let (note_id, shared) = (note.id, note.shared_with.contains(&id));
+        let store = self.store.clone();
+        self.relink(
+            async move { store.set_note_shared(note_id, id, shared).await },
+            window,
+            cx,
+        );
+    }
+
     /// Runs `request`, a change of children or labels. The checkbox already
     /// shows the change (an optimistic update); the stored note replaces it
     /// when the reply arrives.
@@ -547,6 +579,8 @@ impl NoteEditor {
                     if let Some(note) = this.note.as_mut().filter(|note| note.id == stored.id) {
                         note.children = stored.children.clone();
                         note.labels = stored.labels.clone();
+                        // Unassigning a child unshares the note too.
+                        note.shared_with = stored.shared_with.clone();
                     }
                     cx.emit(NoteEditorEvent::Saved(stored));
                     cx.notify();
@@ -621,10 +655,15 @@ impl NoteEditor {
             .iter()
             .filter(|child| note.children.contains(&child.id))
             .map(|child| {
+                let shared = note.shared_with.contains(&child.id);
                 h_flex()
                     .gap_1()
                     .child(div().size_2().rounded_full().bg(rgb(child.color)))
                     .child(child.name.clone())
+                    // Shared with them: they can read it.
+                    .when(shared, |chip| {
+                        chip.child(Icon::new(gpui_kit::assets::IconName::Share2).xsmall())
+                    })
             });
         let labels = self
             .labels
@@ -823,6 +862,30 @@ fn assign_popover(editor: WeakEntity<NoteEditor>) -> impl IntoElement {
                         .on_click(move |_, window, cx| {
                             editor
                                 .update(cx, |this, cx| this.toggle_child(id, window, cx))
+                                .ok();
+                        }),
+                );
+            }
+
+            list = list.child(heading("Shared with", cx));
+            let shareable: Vec<&Child> = this
+                .children
+                .iter()
+                .filter(|child| note.children.contains(&child.id))
+                .filter(|child| this.shared_children.contains(&child.id))
+                .collect();
+            if shareable.is_empty() {
+                list = list.child(hint("Right-click a child, then Sharing….", cx));
+            }
+            for (ix, child) in shareable.into_iter().enumerate() {
+                let (editor, id) = (editor.clone(), child.id);
+                list = list.child(
+                    Checkbox::new(("shared", ix))
+                        .label(format!("{} can read it", child.name))
+                        .checked(note.shared_with.contains(&child.id))
+                        .on_click(move |_, window, cx| {
+                            editor
+                                .update(cx, |this, cx| this.toggle_shared(id, window, cx))
                                 .ok();
                         }),
                 );

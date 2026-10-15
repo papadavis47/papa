@@ -32,7 +32,8 @@ const TOKEN_EXPIRATION: &str = "1h";
 pub enum Access {
     /// Everything in that share database.
     Father,
-    /// Read the notes; read and add messages and read receipts.
+    /// Read the notes and the wrapped key; read and add messages and read
+    /// receipts.
     Child,
 }
 
@@ -203,14 +204,15 @@ impl TursoCloud {
         }
 
         // Fine-grained permissions (`turso db tokens create -p`). The tables
-        // are the share schema of PLAN.md §4, which Phase 11 creates. Turso's
+        // are the share schema of PLAN.md §4, as Phase 11 made it (see
+        // `papa_core::share::replica`). Turso's
         // API reference doesn't list this field yet; it's what the official
         // CLI sends.
         let body = match access {
             Access::Father => json!({}),
             Access::Child => json!({
                 "fine_grained_permissions": [
-                    { "t": ["shared_note", "shared_blob"], "a": ["data_read"] },
+                    { "t": ["share_schema", "share_key", "shared_note", "shared_blob"], "a": ["data_read"] },
                     { "t": ["message", "receipt"], "a": ["data_read", "data_add"] },
                 ]
             }),

@@ -1,12 +1,13 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     menu::{PopupMenu, PopupMenuItem},
     sidebar::{
         Sidebar, SidebarCollapsible, SidebarGroup, SidebarItem as _, SidebarMenu, SidebarMenuItem,
     },
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, ClickEvent, Hsla, IntoElement, RenderOnce, Styled as _, Window, rgb, transparent_black,
 };
@@ -25,6 +26,8 @@ pub enum SidebarEvent {
     Select(NoteFilter),
     AddChild,
     EditChild(ChildId),
+    /// Open the child's sharing dialog.
+    ShareChild(ChildId),
     DeleteChild(ChildId),
     AddLabel,
     RenameLabel(LabelId),
@@ -35,10 +38,12 @@ type OnEvent = Rc<dyn Fn(&SidebarEvent, &mut Window, &mut App)>;
 
 /// "All notes", children, labels, and the Messages / Settings entries.
 /// Clicking one filters the note list; right-click a child or label to edit
-/// or delete it.
+/// or delete it, or a child to share notes with them.
 #[derive(IntoElement)]
 pub struct AppSidebar {
     children: Vec<Child>,
+    /// Children whose sharing is on: they get a cloud next to their name.
+    shared: Vec<ChildId>,
     labels: Vec<Label>,
     selected: NoteFilter,
     /// `false` until the vault is open, so nothing can be added too early.
@@ -52,6 +57,7 @@ pub struct AppSidebar {
 impl AppSidebar {
     pub fn new(
         children: &[Child],
+        shared: &[ChildId],
         labels: &[Label],
         selected: NoteFilter,
         enabled: bool,
@@ -59,6 +65,7 @@ impl AppSidebar {
     ) -> Self {
         Self {
             children: children.to_vec(),
+            shared: shared.to_vec(),
             labels: labels.to_vec(),
             selected,
             enabled,
@@ -84,21 +91,30 @@ fn filter_item(item: SidebarMenuItem, active: bool, ring: Option<Hsla>) -> Sideb
 }
 
 /// A context menu with "Edit…"/"Rename…" and "Delete…" entries that send
-/// `edit` and `delete` through `on_event`.
+/// `edit` and `delete` through `on_event`, and for a child, "Sharing…"
+/// between them.
 fn edit_menu(
     on_event: &OnEvent,
     edit_label: &'static str,
     edit: SidebarEvent,
+    share: Option<SidebarEvent>,
     delete: SidebarEvent,
 ) -> impl Fn(PopupMenu, &mut Window, &mut App) -> PopupMenu + 'static {
     let on_event = on_event.clone();
     move |menu, _, _| {
         let on_edit = on_event.clone();
+        let on_share = on_event.clone();
         let on_delete = on_event.clone();
         menu.item(
             PopupMenuItem::new(edit_label)
                 .on_click(move |_, window, cx| on_edit(&edit, window, cx)),
         )
+        .when_some(share, |menu, share| {
+            menu.item(
+                PopupMenuItem::new("Sharing…")
+                    .on_click(move |_, window, cx| on_share(&share, window, cx)),
+            )
+        })
         .item(
             PopupMenuItem::new("Delete…")
                 .on_click(move |_, window, cx| on_delete(&delete, window, cx)),
@@ -115,9 +131,17 @@ impl RenderOnce for AppSidebar {
         };
 
         let ring = self.focused.then_some(cx.theme().ring);
+        let shared = self.shared;
         let children = self.children.into_iter().map(|child| {
-            let item = SidebarMenuItem::new(child.name)
+            let mut item = SidebarMenuItem::new(child.name)
                 .icon(Icon::new(IconName::CircleUser).text_color(rgb(child.color)));
+            if shared.contains(&child.id) {
+                item = item.suffix(|_, cx| {
+                    Icon::new(gpui_kit::assets::IconName::Cloud)
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground)
+                });
+            }
             let active = self.selected == NoteFilter::Child(child.id);
             filter_item(item, active, ring)
                 .on_click(send(SidebarEvent::Select(NoteFilter::Child(child.id))))
@@ -125,6 +149,7 @@ impl RenderOnce for AppSidebar {
                     &on_event,
                     "Edit…",
                     SidebarEvent::EditChild(child.id),
+                    Some(SidebarEvent::ShareChild(child.id)),
                     SidebarEvent::DeleteChild(child.id),
                 ))
         });
@@ -142,6 +167,7 @@ impl RenderOnce for AppSidebar {
                     &on_event,
                     "Rename…",
                     SidebarEvent::RenameLabel(label.id),
+                    None,
                     SidebarEvent::DeleteLabel(label.id),
                 ))
         });

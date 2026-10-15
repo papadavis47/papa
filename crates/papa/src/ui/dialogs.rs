@@ -1,5 +1,5 @@
-//! Dialogs for adding, editing and deleting children and labels, and for
-//! the vault's password.
+//! Dialogs for adding, editing and deleting children and labels, for the
+//! vault's password, and for the father's Papa account.
 //!
 //! Each takes an `on_save`/`on_delete` callback instead of touching app state
 //! itself, like the other components in `ui/`. Names are checked here with the
@@ -19,6 +19,7 @@ use gpui_kit::{
 use papa_core::model::{clean_child_name, clean_label_name};
 use papa_core::{Child, ChildDraft, Error, Label};
 
+use super::account_form::{AccountEntry, AccountForm, AccountPurpose};
 use super::name_form::NameForm;
 use super::password_form::{PasswordEntry, PasswordForm, PasswordPurpose};
 use super::sentence;
@@ -185,6 +186,66 @@ pub fn password_dialog(
                             .trigger(move |button| button.label("Cancel").disabled(busy)),
                     )
                     .child(DialogAction::new().child(ok)),
+            )
+            .on_ok(move |_, window, cx| {
+                if form.read(cx).is_busy() {
+                    return false;
+                }
+                match form.read(cx).entry(cx) {
+                    Ok(entry) => {
+                        form.update(cx, |form, cx| form.set_busy(cx));
+                        redraw_dialogs(window, cx);
+                        on_submit(entry, form.clone(), window, cx);
+                    }
+                    Err(message) => form.update(cx, |form, cx| form.set_error(message, cx)),
+                }
+                false
+            })
+    });
+    first.update(cx, |input, cx| input.focus(window, cx));
+}
+
+/// Opens the dialog to sign in, or to create an account. Like
+/// [`password_dialog`], it stays open and busy while `on_submit`'s work
+/// talks to the server, which ends it with `AccountForm::set_error` or
+/// `window.close_dialog`.
+pub fn account_dialog(
+    purpose: AccountPurpose,
+    server: String,
+    email: String,
+    on_submit: impl Fn(AccountEntry, Entity<AccountForm>, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let form = cx.new(|cx| AccountForm::new(purpose, server, email, window, cx));
+    let first = form.read(cx).first_input(cx);
+    let on_submit = Rc::new(on_submit);
+
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let form = form.clone();
+        let on_submit = on_submit.clone();
+        let busy = form.read(cx).is_busy();
+        dialog
+            .title(purpose.title())
+            .w(px(420.))
+            .close_button(!busy)
+            .keyboard(!busy)
+            .overlay_closable(!busy)
+            .child(form.clone())
+            .footer(
+                DialogFooter::new()
+                    .child(
+                        DialogClose::new()
+                            .trigger(move |button| button.label("Cancel").disabled(busy)),
+                    )
+                    .child(
+                        DialogAction::new().child(
+                            Button::new("ok")
+                                .primary()
+                                .label(purpose.ok_label())
+                                .loading(busy),
+                        ),
+                    ),
             )
             .on_ok(move |_, window, cx| {
                 if form.read(cx).is_busy() {

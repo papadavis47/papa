@@ -242,6 +242,8 @@ impl PapaApp {
                 }
             }
         }
+        // It may be shared: the children's copies follow.
+        self.note_changed(window, cx);
         cx.notify();
     }
 }

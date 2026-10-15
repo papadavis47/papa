@@ -22,6 +22,18 @@ pub fn long(at: Timestamp, tz: &TimeZone) -> String {
     at.to_zoned(tz.clone()).strftime("%b %-d %Y").to_string()
 }
 
+/// How long ago `at` was, for "Last synced 2 min ago": minutes within the
+/// hour, hours within the day, then the date.
+pub fn ago(at: Timestamp, now: Timestamp) -> String {
+    let seconds = now.as_second() - at.as_second();
+    match seconds {
+        ..60 => "just now".to_owned(),
+        60..3600 => format!("{} min ago", seconds / 60),
+        3600..86_400 => format!("{} h ago", seconds / 3600),
+        _ => short(at, &now.to_zoned(TimeZone::system())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +58,20 @@ mod tests {
         // (summer time, UTC+2).
         assert_eq!(short(at("2026-10-11T23:30:00Z"), &now()), "01:30");
         assert_eq!(short(at("2026-10-11T21:30:00Z"), &now()), "Oct 11");
+    }
+
+    #[test]
+    fn ago_counts_minutes_then_hours() {
+        let now = at("2026-10-12T15:30:00Z");
+        let before = |seconds: i64| ago(now - jiff::SignedDuration::from_secs(seconds), now);
+        assert_eq!(before(0), "just now");
+        assert_eq!(before(59), "just now");
+        assert_eq!(before(60), "1 min ago");
+        assert_eq!(before(3599), "59 min ago");
+        assert_eq!(before(3600), "1 h ago");
+        assert_eq!(before(86_399), "23 h ago");
+        // A clock that moved back reads as now, not "-1 min ago".
+        assert_eq!(ago(at("2026-10-12T15:31:00Z"), now), "just now");
     }
 
     #[test]

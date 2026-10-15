@@ -654,7 +654,7 @@ async fn cloud_mode_drives_the_platform_api() {
     assert_eq!(
         calls[2],
         json!({ "op": "token", "name": name, "query": query, "body": { "fine_grained_permissions": [
-            { "t": ["shared_note", "shared_blob"], "a": ["data_read"] },
+            { "t": ["share_schema", "share_key", "shared_note", "shared_blob"], "a": ["data_read"] },
             { "t": ["message", "receipt"], "a": ["data_read", "data_add"] },
         ] } })
     );

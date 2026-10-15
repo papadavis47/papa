@@ -136,9 +136,63 @@ pub enum Error {
     #[error("the vault is busy; try again")]
     Busy,
 
+    #[error("that isn't a Papa access key; check it was copied in full")]
+    InvalidAccessKey,
+
+    /// Opening a sealed note, image or key failed: the wrong key, or the
+    /// data was changed on the way.
+    #[error("couldn't decrypt {0}: the key is wrong, or the data was changed")]
+    Decrypt(&'static str),
+
+    /// The relay refused a request. `message` is the relay's, for people;
+    /// match on `code`.
+    #[error("{}", relay_message(*.code, .message))]
+    Relay {
+        code: papa_proto::ErrorCode,
+        message: String,
+    },
+
+    /// The relay or a share's database couldn't be reached.
+    #[error("couldn't reach the server: {0}")]
+    Network(String),
+
+    #[error("sign in to your Papa account first, in Settings → Sharing")]
+    NotSignedIn,
+
+    #[error("sharing with this child was set up on {0}; sign in to that server to manage it")]
+    WrongRelay(String),
+
+    #[error("the server address must start with https:// (or http:// for one on this computer)")]
+    InvalidRelayUrl,
+
+    #[error("{0} is still shared. Stop sharing first, so their copy in the cloud is deleted too")]
+    ChildIsShared(String),
+
+    /// Sharing a note with a child it isn't about, or who isn't shared.
+    #[error("the note can only be shared with a child it's about, once sharing with them is on")]
+    CantShareNote,
+
+    /// Turso's sync failed while pushing a share.
+    #[error("couldn't sync the shared notes: {0}")]
+    Sync(String),
+
     /// An error from the `turso` engine, shown as-is.
     #[error(transparent)]
     Database(#[from] turso::Error),
+}
+
+/// A relay error for people: the relay's own message, except where the
+/// app knows better what to do about it.
+fn relay_message(code: papa_proto::ErrorCode, message: &str) -> String {
+    use papa_proto::ErrorCode::*;
+    match code {
+        InvalidCredentials => "that email doesn't match that password or access key".to_owned(),
+        InvalidInvite => "that invite code is unknown, used or expired".to_owned(),
+        EmailTaken => "there's already an account with that email; sign in instead".to_owned(),
+        RateLimited => "too many attempts; wait a minute and try again".to_owned(),
+        Unauthorized => "your session has ended; sign in again in Settings → Sharing".to_owned(),
+        _ => message.to_owned(),
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

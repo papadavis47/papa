@@ -1,6 +1,6 @@
 # 0015. Sharing: access keys, sealed rows, and a projection that is safe to repeat
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-15
 
 ## Context

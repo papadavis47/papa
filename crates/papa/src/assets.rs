@@ -15,6 +15,7 @@ gpui_kit::assets::icon_assets!(
     [
         ArchiveRestore,
         BookDown,
+        BookHeart,
         Cloud,
         DatabaseBackup,
         FileDown,

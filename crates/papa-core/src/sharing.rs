@@ -290,7 +290,7 @@ impl Worker {
         email: String,
         call: impl AsyncFnOnce(&RelayClient, &str) -> Result<papa_proto::Session>,
     ) -> Result<Account> {
-        let relay_url = clean_relay_url(&relay_url)?;
+        let relay_url = crate::relay::clean_url(&relay_url)?;
         let email = email.trim().to_owned();
         let relay = self.relay(&relay_url)?;
         let session = call(&relay, &email).await?;
@@ -556,36 +556,5 @@ impl Worker {
 
     fn replica_path(&self, child: ChildId) -> PathBuf {
         self.shares_dir.join(format!("{child}.db"))
-    }
-}
-
-/// Checks a relay address typed by the father, and drops a trailing `/`.
-fn clean_relay_url(url: &str) -> Result<String> {
-    let url = url.trim().trim_end_matches('/');
-    if !(url.starts_with("https://") || url.starts_with("http://"))
-        || url.contains(char::is_whitespace)
-    {
-        return Err(Error::InvalidRelayUrl);
-    }
-    Ok(url.to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relay_addresses_are_checked_and_tidied() {
-        assert_eq!(
-            clean_relay_url(" https://relay.example/ ").unwrap(),
-            "https://relay.example"
-        );
-        assert_eq!(
-            clean_relay_url("http://127.0.0.1:8787").unwrap(),
-            "http://127.0.0.1:8787"
-        );
-        for bad in ["relay.example", "ftp://relay.example", "https://re lay", ""] {
-            assert!(clean_relay_url(bad).is_err(), "{bad:?}");
-        }
     }
 }

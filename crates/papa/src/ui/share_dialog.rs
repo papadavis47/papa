@@ -17,6 +17,7 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
 use jiff::Timestamp;
+use papa_core::share::KeyCard;
 use papa_core::{Child, ChildShare};
 
 use super::dates;
@@ -162,7 +163,8 @@ impl ShareDialog {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let name = self.child.name.clone();
-        let key = share.access_key.to_string();
+        // With the server, unless it's Papa's own: the child never types one.
+        let key = KeyCard::new(share.access_key.clone(), &share.relay_url).to_string();
         let busy = self.busy.is_some();
         let muted = cx.theme().muted_foreground;
         let synced = match share.last_synced_at {
@@ -286,8 +288,9 @@ impl ShareDialog {
                     ),
             )
             .child(div().text_sm().child(format!(
-                "{name} signs in to Papa with your email, {email}, and this key. Hand it \
-                 over in person, or send it in a message only {name} reads."
+                "In Papa, {name} chooses “Open notes shared with me” and signs in with your \
+                 email, {email}, and this key. Hand it over in person, or send it in a \
+                 message only {name} reads."
             )))
             .child(
                 div()

@@ -72,6 +72,8 @@ pub struct NoteList {
     focused: bool,
     /// What exporting the list makes: "Emma’s book", "3 notes".
     export: SharedString,
+    /// No "New note" button: a child reads what Dad shared.
+    read_only: bool,
     on_event: OnEvent,
 }
 
@@ -101,6 +103,7 @@ impl NoteList {
             enabled,
             focused: false,
             export: SharedString::default(),
+            read_only: false,
             on_event: Rc::new(on_event),
         }
     }
@@ -108,6 +111,12 @@ impl NoteList {
     /// Names what the export button exports.
     pub fn export(mut self, export: impl Into<SharedString>) -> Self {
         self.export = export.into();
+        self
+    }
+
+    /// Leaves out the "New note" button.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
         self
     }
 
@@ -153,15 +162,17 @@ impl RenderOnce for NoteList {
                     // Handled by `PapaApp`, which owns exports.
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(ExportNotes), cx)),
             )
-            .child(
-                Button::new("new-note")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Plus)
-                    .disabled(!self.enabled)
-                    .tooltip_with_action("New note", &NewNote, Some(APP_CONTEXT))
-                    .on_click(move |_, window, cx| on_new(&NoteListEvent::NewNote, window, cx)),
-            );
+            .when(!self.read_only, |header| {
+                header.child(
+                    Button::new("new-note")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Plus)
+                        .disabled(!self.enabled)
+                        .tooltip_with_action("New note", &NewNote, Some(APP_CONTEXT))
+                        .on_click(move |_, window, cx| on_new(&NoteListEvent::NewNote, window, cx)),
+                )
+            });
 
         let search = div().key_context(NOTE_SEARCH_CONTEXT).px_3().py_2().child(
             Input::new(&self.search)

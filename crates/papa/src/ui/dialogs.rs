@@ -84,18 +84,31 @@ pub fn confirm_delete(
     window: &mut Window,
     cx: &mut App,
 ) {
+    confirm_danger(title, description, "Delete", on_delete, window, cx);
+}
+
+/// Asks before something that can't be undone: `ok` names it on a red
+/// button, next to Cancel.
+pub fn confirm_danger(
+    title: String,
+    description: &'static str,
+    ok: &'static str,
+    on_ok: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let title = SharedString::from(title);
-    let on_delete = Rc::new(on_delete);
+    let on_ok = Rc::new(on_ok);
     window.open_alert_dialog(cx, move |alert, _, _| {
-        let on_delete = on_delete.clone();
+        let on_ok = on_ok.clone();
         alert
             .title(title.clone())
             .description(description)
             .confirm()
-            .ok_text("Delete")
+            .ok_text(ok)
             .ok_variant(ButtonVariant::Danger)
             .on_ok(move |event, window, cx| {
-                on_delete(event, window, cx);
+                on_ok(event, window, cx);
                 true
             })
     });

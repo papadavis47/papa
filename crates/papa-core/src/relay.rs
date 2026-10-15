@@ -199,6 +199,19 @@ impl RelayClient {
     }
 }
 
+/// Checks a relay address someone typed, and drops a trailing `/`.
+pub fn clean_url(url: &str) -> Result<String> {
+    let url = url.trim().trim_end_matches('/');
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or(Error::InvalidRelayUrl)?;
+    if host.is_empty() || host.contains("://") || url.contains(char::is_whitespace) {
+        return Err(Error::InvalidRelayUrl);
+    }
+    Ok(url.to_owned())
+}
+
 /// An HTTP client set up for the relay. Building one loads the system's
 /// root certificates, so make one and clone it.
 pub(crate) fn http_client() -> Result<reqwest::Client> {
@@ -220,4 +233,31 @@ fn network(err: reqwest::Error) -> Error {
         err.to_string()
     };
     Error::Network(reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_addresses_are_checked_and_tidied() {
+        assert_eq!(
+            clean_url(" https://relay.example/ ").unwrap(),
+            "https://relay.example"
+        );
+        assert_eq!(
+            clean_url("http://127.0.0.1:8787").unwrap(),
+            "http://127.0.0.1:8787"
+        );
+        for bad in [
+            "relay.example",
+            "ftp://relay.example",
+            "https://ftp://relay.example",
+            "https://re lay",
+            "https://",
+            "",
+        ] {
+            assert!(clean_url(bad).is_err(), "{bad:?}");
+        }
+    }
 }

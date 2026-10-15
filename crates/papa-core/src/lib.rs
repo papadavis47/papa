@@ -12,11 +12,14 @@
 //!   a child's cloud database, and the share projection.
 //! - [`Sharing`]: the father's side of sharing, on its own thread: his
 //!   relay account, each child's share, and syncing it.
+//! - [`ChildSession`]: the child's side of sharing, on its own thread:
+//!   signing in with Dad's email and a key, pulling, and decrypting.
 //! - [`relay`]: the relay's HTTP API.
 //!
-//! Planned (see `PLAN.md`): the child's side of sharing, and messages.
+//! Planned (see `PLAN.md`): messages.
 
 pub mod backup;
+mod child_session;
 mod error;
 mod files;
 pub mod images;
@@ -30,11 +33,12 @@ mod sharing;
 mod store;
 mod tls;
 
+pub use child_session::{ChildSession, SharedNotes};
 pub use error::{Error, Result};
 pub use images::PreparedImage;
 pub use model::{
     Account, Child, ChildDraft, ChildId, ChildShare, EncodedImage, ImageFormat, ImageId, Label,
-    LabelId, Note, NoteDraft, NoteFilter, NoteId, NoteImage, NoteQuery, NoteSummary,
+    LabelId, Note, NoteDraft, NoteFilter, NoteId, NoteImage, NoteQuery, NoteSummary, SharedNote,
 };
 pub use sharing::{Sharing, SyncReport};
 pub use store::Store;

@@ -7,7 +7,7 @@
 //! different modules.
 
 mod backup;
-mod export;
+pub(crate) mod export;
 mod lock;
 mod notes;
 mod palette;
@@ -105,9 +105,11 @@ gpui_kit::actions!(
         SignIn,
         /// Create a Papa account with an invite code.
         CreateAccount,
-        /// Sign out of the Papa account.
+        /// Sign out of the Papa account. In child mode: of the notes shared
+        /// with you.
         SignOut,
-        /// Sync shared notes now, rather than after the next change.
+        /// Sync shared notes now, rather than after the next change. In
+        /// child mode: check for new notes.
         SyncNow,
     ]
 );
@@ -163,6 +165,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-p", ExportNotes, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-l", LockVault, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-k", ToggleCommandPalette, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-r", SyncNow, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-1", FocusSidebar, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-2", FocusNoteList, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-3", FocusEditor, Some(APP_CONTEXT)),
@@ -203,6 +206,11 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &ToggleTheme, cx| theme::toggle(cx));
     cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
+
+    // What the Settings window reads, before any mode publishes its own.
+    cx.set_global(VaultStatus::Unavailable);
+    cx.set_global(AccountStatus::default());
+    cx.set_global(crate::mode::ModeStatus::default());
 }
 
 /// The main window, so the Settings window can send it commands.
@@ -373,13 +381,7 @@ pub struct PapaApp {
 }
 
 impl PapaApp {
-    /// `settings_problem` is why the settings file couldn't be read, if it
-    /// couldn't; it's shown once the window is up.
-    pub fn new(
-        settings_problem: Option<anyhow::Error>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar_focus = cx.focus_handle();
         // Start in the sidebar so the arrow keys work straight away.
         sidebar_focus.focus(window, cx);
@@ -409,11 +411,6 @@ impl PapaApp {
             cx.on_focus_lost(window, |this, window, cx| {
                 this.focus_handle.focus(window, cx);
             }),
-            // "Match system" follows the OS switching between light and dark
-            // while the app runs.
-            cx.observe_window_appearance(window, |_, window, cx| {
-                theme::set_system_appearance(window, cx)
-            }),
             // Density, fonts and line height are read while rendering, so a
             // change only needs a redraw. It redraws the whole window, the
             // editor included.
@@ -421,20 +418,6 @@ impl PapaApp {
             // Typing anywhere, the Settings window included, counts as use.
             cx.observe_keystrokes(|this, _, _, _| this.last_activity = Instant::now()),
         ];
-        theme::set_system_appearance(window, cx);
-        if let Some(err) = settings_problem {
-            // Deferred: the window's `Root`, which shows notifications, is
-            // built around this view after `new` returns.
-            cx.defer_in(window, move |_, window, cx| {
-                window.push_notification(
-                    Notification::warning(sentence(format!("{err:#}")))
-                        .title("Papa couldn't read your settings")
-                        .autohide(false),
-                    cx,
-                );
-            });
-        }
-
         // The window shows up immediately; this task waits for the database
         // thread without blocking the UI, then fills in the state. `this` is a
         // weak handle, so the task doesn't keep a closed window's view alive.
@@ -757,7 +740,7 @@ impl Render for PapaApp {
 }
 
 /// A pane's key context, with [`VIM_CONTEXT`] while Vim mode is on.
-fn pane_context(name: &'static str, vim: bool) -> KeyContext {
+pub(crate) fn pane_context(name: &'static str, vim: bool) -> KeyContext {
     let mut context = KeyContext::default();
     context.add(name);
     if vim {

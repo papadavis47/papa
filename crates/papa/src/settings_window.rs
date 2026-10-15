@@ -9,6 +9,10 @@
 //! The vault's buttons (password, lock, backup) are different: the vault
 //! belongs to the main window, so they send it an action and bring it
 //! forward, and read the [`VaultStatus`] global it publishes.
+//!
+//! The pages follow the main window's mode ([`ModeStatus`]): a child
+//! reading Dad's notes has no vault, editor or sharing to set up, so they
+//! get Appearance, their sign-in, and Data.
 
 use std::path::PathBuf;
 
@@ -37,6 +41,7 @@ use crate::app::{
     AccountStatus, ChangePassword, CreateAccount, ExportBackup, LockVault, RemovePassword,
     RestoreBackup, SignIn, SignOut, SyncNow, VaultStatus, dispatch_to_main,
 };
+use crate::mode::ModeStatus;
 use crate::settings::AppSettings;
 use crate::theme;
 
@@ -172,6 +177,7 @@ impl SettingsPanel {
         subscriptions.push(cx.observe_global::<VaultStatus>(|_, cx| cx.notify()));
         // The account buttons follow signing in and out.
         subscriptions.push(cx.observe_global::<AccountStatus>(|_, cx| cx.notify()));
+        subscriptions.push(cx.observe_global::<ModeStatus>(|_, cx| cx.notify()));
         // A theme file added to the themes folder joins the lists.
         subscriptions
             .push(cx.observe_global::<gpui_kit::component::ThemeRegistry>(|_, cx| cx.notify()));
@@ -246,15 +252,30 @@ impl Render for SettingsPanel {
                     Settings::new("settings")
                         .with_group_variant(GroupBoxVariant::Outline)
                         .sidebar_width(px(200.))
-                        .pages([
-                            self.appearance_page(cx),
-                            editor_page(),
-                            privacy_page(),
-                            sharing_page(),
-                            data_page(),
-                        ]),
+                        .pages(self.pages(cx)),
                 ),
             )
+    }
+}
+
+impl SettingsPanel {
+    /// The pages for the main window's mode.
+    fn pages(&self, cx: &App) -> Vec<SettingPage> {
+        match cx.global::<ModeStatus>() {
+            ModeStatus::Father => vec![
+                self.appearance_page(cx),
+                editor_page(),
+                privacy_page(),
+                sharing_page(),
+                data_page(),
+            ],
+            ModeStatus::Child { .. } => vec![
+                self.appearance_page(cx),
+                shared_with_me_page(),
+                child_data_page(),
+            ],
+            ModeStatus::Welcome => vec![self.appearance_page(cx)],
+        }
     }
 }
 
@@ -681,14 +702,69 @@ fn account_buttons() -> SettingField<SharedString> {
     })
 }
 
-fn data_page() -> SettingPage {
-    let vault = paths::vault_path().ok();
-    let settings_file = paths::settings_path().ok();
-    let describe = |path: &Option<PathBuf>| match path {
+/// Child mode: who shared, checking for new notes, and signing out.
+fn shared_with_me_page() -> SettingPage {
+    SettingPage::new("Shared with me")
+        .icon(IconName::Globe)
+        .resettable(false)
+        .group(
+            SettingGroup::new()
+                .title("Notes from Dad")
+                .description(
+                    "Dad's notes are encrypted on his computer and decrypted only on this                      one. Papa checks for new ones every minute while it's open.",
+                )
+                .item(
+                    SettingItem::new(
+                        "Signed in",
+                        SettingField::render(|_, _, cx| {
+                            let email = match cx.global::<ModeStatus>() {
+                                ModeStatus::Child { father_email } => father_email.clone(),
+                                _ => String::new(),
+                            };
+                            gpui_kit::component::h_flex()
+                                .gap_2()
+                                .child(div().text_sm().child(email))
+                                .child(
+                                    Button::new("child-sign-out")
+                                        .outline()
+                                        .small()
+                                        .label("Sign out…")
+                                        .on_click(|_, _, cx| dispatch_to_main(&SignOut, cx)),
+                                )
+                        }),
+                    )
+                    .description(
+                        "With Dad's email and your key. Signing out removes the notes from                          this computer.",
+                    )
+                    .keywords(["sign out", "log out", "key", "email", "account"]),
+                )
+                .item(
+                    SettingItem::new(
+                        "New notes",
+                        SettingField::render(|_, _, _| {
+                            Button::new("check-now")
+                                .outline()
+                                .small()
+                                .label("Check now")
+                                .on_click(|_, _, cx| dispatch_to_main(&SyncNow, cx))
+                        }),
+                    )
+                    .description("Look for notes Dad shared since the last check.")
+                    .keywords(["sync", "refresh", "pull", "update"]),
+                ),
+        )
+}
+
+/// "Where the files are", as the Files group describes a path.
+fn describe(path: &Option<PathBuf>) -> String {
+    match path {
         Some(path) => paths::display(path),
         None => "Not available on this system".to_owned(),
-    };
+    }
+}
 
+/// The paper size of exported PDFs, in either mode.
+fn paper_group() -> SettingGroup {
     let paper = SettingField::dropdown(
         options(&[("a4", "A4"), ("letter", "US Letter")]),
         get(|s| {
@@ -707,16 +783,51 @@ fn data_page() -> SettingPage {
     )
     .default_value("a4");
 
+    SettingGroup::new().title("PDF export").item(
+        SettingItem::new("Paper size", paper)
+            .description("The page size of exported notes and books.")
+            .keywords(["pdf", "print", "a4", "letter", "page"]),
+    )
+}
+
+/// Child mode's Data page: the paper size, and where the notes are kept.
+fn child_data_page() -> SettingPage {
+    let notes = paths::vault_path()
+        .ok()
+        .map(|vault| paths::child_dir(&vault));
+    let settings_file = paths::settings_path().ok();
     SettingPage::new("Data")
         .icon(IconName::HardDrive)
         .resettable(false)
+        .group(paper_group())
         .group(
-            SettingGroup::new().title("PDF export").item(
-                SettingItem::new("Paper size", paper)
-                    .description("The page size of exported notes and books.")
-                    .keywords(["pdf", "print", "a4", "letter", "page"]),
-            ),
+            SettingGroup::new()
+                .title("Files")
+                .description(
+                    "The notes are kept encrypted, so you can read them offline. Papa \
+                     decrypts them only while it's open.",
+                )
+                .item(
+                    SettingItem::new("Shared notes", reveal_button(notes.clone()))
+                        .description(describe(&notes))
+                        .keywords(["database", "location", "path", "folder"]),
+                )
+                .item(
+                    SettingItem::new("Settings file", reveal_button(settings_file.clone()))
+                        .description(describe(&settings_file))
+                        .keywords(["json", "location", "path"]),
+                ),
         )
+}
+
+fn data_page() -> SettingPage {
+    let vault = paths::vault_path().ok();
+    let settings_file = paths::settings_path().ok();
+
+    SettingPage::new("Data")
+        .icon(IconName::HardDrive)
+        .resettable(false)
+        .group(paper_group())
         .group(
             SettingGroup::new()
                 .title("Backup")

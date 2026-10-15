@@ -1,6 +1,6 @@
 # 0016. Child mode: a mode is a type, the replica is the offline cache, and the server travels with the key
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-15
 
 ## Context

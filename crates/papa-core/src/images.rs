@@ -123,6 +123,15 @@ pub fn prepare(bytes: Vec<u8>) -> Result<PreparedImage> {
     })
 }
 
+/// The width and height an encoded image says it has, read from its
+/// header without decoding the pixels. Papa's stored copies are already
+/// upright, so this is their size as shown.
+pub fn dimensions(image: &EncodedImage) -> Result<(u32, u32)> {
+    ImageReader::with_format(Cursor::new(&image.bytes), image.format.into())
+        .into_dimensions()
+        .map_err(image_error)
+}
+
 /// Recognises the formats Papa accepts by their first bytes, ignoring the
 /// file name: a pasted image has none, and extensions lie.
 fn detect_format(bytes: &[u8]) -> Result<ImageFormat> {
@@ -230,9 +239,12 @@ pub(crate) mod tests {
         out
     }
 
-    fn dimensions(image: &EncodedImage) -> (u32, u32) {
+    fn decoded_size(image: &EncodedImage) -> (u32, u32) {
         let pixels = image::load_from_memory(&image.bytes).unwrap();
-        (pixels.width(), pixels.height())
+        let size = (pixels.width(), pixels.height());
+        // The header says the same, without decoding.
+        assert_eq!(dimensions(image).unwrap(), size);
+        size
     }
 
     #[test]
@@ -245,7 +257,7 @@ pub(crate) mod tests {
         assert_eq!(prepared.original.format, ImageFormat::Png);
         assert_eq!((prepared.width, prepared.height), (300, 200));
         assert_eq!(prepared.display, None);
-        assert_eq!(dimensions(&prepared.thumb), (300, 200), "never scaled up");
+        assert_eq!(decoded_size(&prepared.thumb), (300, 200), "never scaled up");
         assert_eq!(prepared.thumb.format, ImageFormat::Jpeg);
     }
 
@@ -256,8 +268,8 @@ pub(crate) mod tests {
         assert_eq!((prepared.width, prepared.height), (3000, 1500));
         let display = prepared.display.as_ref().unwrap();
         assert_eq!(display.format, ImageFormat::Jpeg);
-        assert_eq!(dimensions(display), (DISPLAY_EDGE, DISPLAY_EDGE / 2));
-        assert_eq!(dimensions(&prepared.thumb), (THUMB_EDGE, THUMB_EDGE / 2));
+        assert_eq!(decoded_size(display), (DISPLAY_EDGE, DISPLAY_EDGE / 2));
+        assert_eq!(decoded_size(&prepared.thumb), (THUMB_EDGE, THUMB_EDGE / 2));
     }
 
     #[test]
@@ -269,8 +281,8 @@ pub(crate) mod tests {
         assert_eq!(prepared.original.bytes, bytes);
         assert_eq!((prepared.width, prepared.height), (40, 60), "upright");
         let display = prepared.display.as_ref().expect("the original is sideways");
-        assert_eq!(dimensions(display), (40, 60));
-        assert_eq!(dimensions(&prepared.thumb), (40, 60));
+        assert_eq!(decoded_size(display), (40, 60));
+        assert_eq!(decoded_size(&prepared.thumb), (40, 60));
     }
 
     #[test]

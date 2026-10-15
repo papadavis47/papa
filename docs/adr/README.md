@@ -19,5 +19,6 @@ Short records of significant decisions: the context, what we chose, and what it 
 | [0013](0013-vault-encryption-key-file-and-backups.md) | Vault encryption with a wrapped key, and backups as one file | Accepted |
 | [0014](0014-relay-api-tokens-and-local-sync.md) | The relay: hashed secrets, two provisioning backends, and a local sync server for development | Accepted |
 | [0015](0015-sharing-keys-and-idempotent-projection.md) | Sharing: access keys, sealed rows, and a projection that is safe to repeat | Accepted |
+| [0016](0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md) | Child mode: a mode is a type, the replica is the offline cache, and the server travels with the key | Proposed |
 
 Template: copy [0000-template.md](0000-template.md).

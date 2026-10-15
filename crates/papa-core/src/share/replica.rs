@@ -1,5 +1,6 @@
-//! A share database: the local replica in `shares/<child>.db`, synced with
-//! the cloud database the relay made for the share.
+//! A share database: the local replica in `shares/<child>.db` on the
+//! father's computer, or `child/share.db` on the child's, synced with the
+//! cloud database the relay made for the share.
 //!
 //! Turso's sync keeps a log of what changed locally since the last push;
 //! `push` sends it, `pull` fetches what others wrote. Only the father
@@ -23,7 +24,7 @@ use papa_proto::Secret;
 use turso::{Connection, Row, Value};
 
 use super::Sealed;
-use super::projection::{BlobKind, Manifest, NoteVersion, ShareChanges};
+use super::projection::{BlobKind, Manifest, NoteVersion, SealedNote, ShareChanges};
 use crate::{Error, ImageId, NoteId, Result};
 
 /// Migration `n` (from 1) brings a share database from version `n - 1` to
@@ -85,6 +86,20 @@ impl Replica {
     /// Opens the replica at `path`, creating it from the cloud database at
     /// `url` if it doesn't exist yet, and brings its schema up to date.
     pub(crate) async fn open(path: &Path, url: &str, token: TokenCell) -> Result<Self> {
+        let mut replica = Self::open_for_reading(path, url, token).await?;
+        replica.migrate().await?;
+        Ok(replica)
+    }
+
+    /// Opens a child's replica: like [`open`](Self::open), but it never
+    /// writes. The schema is the father's to make; until his first sync,
+    /// the database is empty.
+    ///
+    /// A replica that exists opens without the network, from what the
+    /// last pull left: the child's notes, offline. Creating one needs the
+    /// server, and a failed attempt can leave files behind (see
+    /// [`remove_files`]).
+    pub(crate) async fn open_for_reading(path: &Path, url: &str, token: TokenCell) -> Result<Self> {
         crate::tls::init();
         let path = path
             .to_str()
@@ -99,9 +114,7 @@ impl Replica {
             .build();
         let db = in_time(build).await?;
         let conn = in_time(db.connect()).await?;
-        let mut replica = Self { db, conn };
-        replica.migrate().await?;
-        Ok(replica)
+        Ok(Self { db, conn })
     }
 
     async fn migrate(&mut self) -> Result<()> {
@@ -125,7 +138,9 @@ impl Replica {
         Ok(())
     }
 
-    async fn schema_version(&self) -> Result<i64> {
+    /// The share database's schema version: 0 until the father's first
+    /// sync makes the tables.
+    pub(crate) async fn schema_version(&self) -> Result<i64> {
         let mut rows = self
             .conn
             .query(
@@ -266,6 +281,95 @@ impl Replica {
     pub(crate) async fn push(&self) -> Result<()> {
         in_time(self.db.push()).await
     }
+
+    /// Fetches what changed in the cloud since the last pull. `true` if
+    /// anything did.
+    pub(crate) async fn pull(&self) -> Result<bool> {
+        in_time(self.db.pull()).await
+    }
+
+    // --- Reading, on the child's side. Call `readable` first: a newer
+    // father's app may have changed the tables. ---
+
+    /// Fails if the father's app wrote a schema this build can't read.
+    /// `false` if he hasn't synced yet, so there's nothing to read.
+    pub(crate) async fn readable(&self) -> Result<bool> {
+        match self.schema_version().await? {
+            0 => Ok(false),
+            found if found > LATEST => Err(Error::SchemaTooNew {
+                found,
+                supported: LATEST,
+            }),
+            _ => Ok(true),
+        }
+    }
+
+    /// The wrapped content keys, by epoch. The father keeps one.
+    pub(crate) async fn share_keys(&self) -> Result<Vec<(i64, Sealed)>> {
+        let mut rows = self
+            .conn
+            .query("SELECT epoch, nonce, wrapped_key FROM share_key", ())
+            .await?;
+        let mut keys = Vec::new();
+        while let Some(row) = rows.next().await? {
+            keys.push((row.get(0)?, sealed(&row, 1)?));
+        }
+        Ok(keys)
+    }
+
+    /// Every note row, still sealed.
+    pub(crate) async fn sealed_notes(&self) -> Result<Vec<SealedNote>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, updated_at, key_epoch, nonce, ciphertext FROM shared_note",
+                (),
+            )
+            .await?;
+        let mut notes = Vec::new();
+        while let Some(row) = rows.next().await? {
+            notes.push(SealedNote {
+                id: parse(&row, 0, "note id")?,
+                version: NoteVersion {
+                    updated_at: row.get(1)?,
+                    epoch: row.get(2)?,
+                },
+                sealed: sealed(&row, 3)?,
+            });
+        }
+        Ok(notes)
+    }
+
+    /// One version of an image, still sealed, with its key epoch.
+    pub(crate) async fn sealed_blob(
+        &self,
+        image: ImageId,
+        kind: BlobKind,
+    ) -> Result<Option<(i64, Sealed)>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT key_epoch, nonce, ciphertext FROM shared_blob WHERE id = ?1 AND kind = ?2",
+                (image.to_string(), kind.as_str()),
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Ok(Some((row.get(0)?, sealed(&row, 1)?))),
+            None => Ok(None),
+        }
+    }
+}
+
+/// The nonce and ciphertext in columns `idx` and `idx + 1`.
+fn sealed(row: &Row, idx: usize) -> Result<Sealed> {
+    let blob = |idx| match row.get_value(idx)? {
+        Value::Blob(bytes) => Ok(bytes),
+        other => Err(Error::Corrupt {
+            what: "sealed value",
+            value: format!("{other:?}"),
+        }),
+    };
+    Sealed::from_parts(&blob(idx)?, blob(idx + 1)?)
 }
 
 /// The files of the replica at `path`: the database, its log, and the sync

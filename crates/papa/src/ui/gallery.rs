@@ -1,6 +1,9 @@
 //! The open note's images: the strip of thumbnails under the body, adding
 //! images from the file picker, a drop or a paste, and deleting them.
 //!
+//! The images come from an [`ImageSource`]: the father's vault, or the
+//! share a child reads. Only the vault's can be added to or deleted.
+//!
 //! Adding an image has two slow steps, and each runs where it belongs:
 //!
 //! ```text
@@ -28,8 +31,10 @@ use gpui_kit::{
     PathPromptOptions, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, Task, Window, div, point, px,
 };
+use papa_core::share::projection::BlobKind;
 use papa_core::{
-    EncodedImage, ImageFormat, ImageId, NoteId, NoteImage, PreparedImage, Store, images,
+    ChildSession, EncodedImage, ImageFormat, ImageId, NoteId, NoteImage, PreparedImage, Store,
+    images,
 };
 
 use super::lightbox::{Lightbox, LightboxEvent};
@@ -82,6 +87,48 @@ pub fn release(image: Arc<Image>, window: &mut Window, cx: &mut App) {
     image.remove_asset(cx);
 }
 
+/// Where a note's images come from: one of the app's two modes each.
+///
+/// An enum rather than a trait: there are exactly two, and what each can
+/// do is part of the type. Only [`Vault`](Self::Vault) hands out the
+/// [`Store`] that adding and deleting need, so a child's gallery can't
+/// reach either, by construction.
+#[derive(Clone)]
+pub enum ImageSource {
+    /// The father's vault.
+    Vault(Store),
+    /// What Dad shared, decrypted on the child's thread. Read-only.
+    Shared(ChildSession),
+}
+
+impl ImageSource {
+    /// A note's images, with their thumbnails.
+    pub async fn note_images(&self, note: NoteId) -> papa_core::Result<Vec<NoteImage>> {
+        match self {
+            Self::Vault(store) => store.note_images(note).await,
+            Self::Shared(session) => session.note_images(note).await,
+        }
+    }
+
+    /// The largest copy to show: the vault's display copy (or original),
+    /// or the share's display copy.
+    pub async fn display_image(&self, image: ImageId) -> papa_core::Result<EncodedImage> {
+        match self {
+            Self::Vault(store) => store.display_image(image).await,
+            Self::Shared(session) => session.image(image, BlobKind::Display).await,
+        }
+    }
+
+    /// The vault, where images can be added and deleted. `None` for a
+    /// share.
+    pub fn store(&self) -> Option<&Store> {
+        match self {
+            Self::Vault(store) => Some(store),
+            Self::Shared(_) => None,
+        }
+    }
+}
+
 /// What the gallery tells the editor.
 #[derive(Clone, Copy, Debug)]
 pub enum GalleryEvent {
@@ -119,7 +166,7 @@ impl Source {
 }
 
 pub struct Gallery {
-    store: Store,
+    source: ImageSource,
     note: Option<NoteId>,
     /// The open note's images, in the order they were added.
     images: Vec<GalleryImage>,
@@ -138,11 +185,11 @@ pub struct Gallery {
 impl EventEmitter<GalleryEvent> for Gallery {}
 
 impl Gallery {
-    pub fn new(store: Store, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let lightbox = cx.new(|cx| Lightbox::new(store.clone(), cx));
+    pub fn new(source: ImageSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let lightbox = cx.new(|cx| Lightbox::new(source.clone(), cx));
         let subscriptions = vec![cx.subscribe_in(&lightbox, window, Self::on_lightbox_event)];
         Self {
-            store,
+            source,
             note: None,
             images: Vec::new(),
             pending: Vec::new(),
@@ -172,9 +219,9 @@ impl Gallery {
             release(image.thumb, window, cx);
         }
         self.loading = note.map(|note| {
-            let store = self.store.clone();
+            let source = self.source.clone();
             cx.spawn_in(window, async move |this, cx| {
-                let result = store.note_images(note).await;
+                let result = source.note_images(note).await;
                 this.update_in(cx, |this, window, cx| match result {
                     Ok(images) => {
                         this.images = images.into_iter().map(GalleryImage::from).collect();
@@ -264,9 +311,11 @@ impl Gallery {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(store) = self.source.store().cloned() else {
+            return;
+        };
         self.pending.extend(sources.iter().map(|_| note));
         cx.notify();
-        let store = self.store.clone();
         cx.spawn_in(window, async move |this, cx| {
             // One at a time: decoding a photo takes a few hundred MB, and a
             // drop of fifty photos shouldn't take them all at once.
@@ -347,6 +396,9 @@ impl Gallery {
     }
 
     fn confirm_delete(&mut self, id: ImageId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.source.store().is_none() {
+            return;
+        }
         dialogs::confirm_delete(
             "Delete this image?".into(),
             "It is removed from the vault. This can't be undone.",
@@ -358,7 +410,9 @@ impl Gallery {
 
     fn delete(&mut self, id: ImageId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(note) = self.note else { return };
-        let store = self.store.clone();
+        let Some(store) = self.source.store().cloned() else {
+            return;
+        };
         cx.spawn_in(window, async move |this, cx| {
             let result = store.delete_image(id).await;
             this.update_in(cx, |this, window, cx| match result {
@@ -394,9 +448,10 @@ impl Render for Gallery {
             return div().into_any_element();
         }
 
+        let editable = self.source.store().is_some();
         let tiles = self.images.iter().enumerate().map(|(ix, image)| {
             let id = image.id;
-            Attachment::new()
+            let tile = Attachment::new()
                 .id(SharedString::from(format!("image-{id}")))
                 // Vertical without text: a square tile the image fills.
                 .axis(Axis::Vertical)
@@ -404,13 +459,16 @@ impl Render for Gallery {
                 .media(AttachmentMedia::new().src(image.thumb.clone()))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.open_lightbox(ix, window, cx)),
-                )
-                .on_remove(cx.listener(move |this, _, window, cx| {
-                    // The × sits on the tile: without this, the tile's own
-                    // click would also open the lightbox.
-                    cx.stop_propagation();
-                    this.confirm_delete(id, window, cx)
-                }))
+                );
+            if !editable {
+                return tile;
+            }
+            tile.on_remove(cx.listener(move |this, _, window, cx| {
+                // The × sits on the tile: without this, the tile's own
+                // click would also open the lightbox.
+                cx.stop_propagation();
+                this.confirm_delete(id, window, cx)
+            }))
         });
         let placeholders = (0..pending).map(|ix| {
             Attachment::new()

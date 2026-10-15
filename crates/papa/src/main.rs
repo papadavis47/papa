@@ -2,7 +2,9 @@
 
 mod app;
 mod assets;
+mod child_app;
 mod export;
+mod mode;
 mod palette;
 mod settings;
 mod settings_window;
@@ -37,10 +39,11 @@ fn main() {
             };
 
             // `open_window` wraps our view in gpui-kit's `Root`, which hosts
-            // dialogs, sheets and notifications above it.
+            // dialogs, sheets and notifications above it. Ours picks the
+            // mode: the father's vault, or a child's shared notes.
             let (window, _) = gpui_kit::open_window(options, cx, |window, cx| {
                 window.set_window_title("Papa");
-                cx.new(|cx| app::PapaApp::new(settings_problem, window, cx))
+                cx.new(|cx| mode::PapaWindow::new(settings_problem, window, cx))
             })
             .expect("failed to open the main window");
             app::quit_with(window, cx);

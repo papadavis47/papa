@@ -6,9 +6,10 @@
 //! callbacks. The exceptions are entities with state of their own:
 //! `NameForm`, `PasswordForm` and `AccountForm` hold a dialog's half-typed
 //! input, `ShareDialog` what it shows of a child's sharing,
-//! `UnlockScreen` the password typed to unlock, `NoteEditor` the open
-//! note's text and its pending save, `Gallery` the note's images and
-//! `Lightbox` the one shown full size.
+//! `UnlockScreen` the password typed to unlock, `WelcomeScreen` the
+//! first-launch choice and a child's sign-in, `NoteEditor` the open
+//! note's text and its pending save, `NoteReader` the note a child reads,
+//! `Gallery` the note's images and `Lightbox` the one shown full size.
 
 mod account_form;
 mod command_palette;
@@ -20,24 +21,28 @@ pub mod lightbox;
 mod name_form;
 mod note_editor;
 mod note_list;
+mod note_reader;
 mod note_view;
 mod password_form;
 mod share_dialog;
 mod sidebar;
 mod title_bar;
 mod unlock;
+mod welcome;
 
 pub use account_form::{AccountEntry, AccountForm, AccountPurpose};
 pub use command_palette::{COMMAND_PALETTE_CONTEXT, CommandPalette, CommandPaletteEvent};
 pub use name_form::suggested_color;
 pub use note_editor::{NoteEditor, NoteEditorEvent};
 pub use note_list::{EmptyNotes, NOTE_SEARCH_CONTEXT, NoteList, NoteListEvent};
+pub use note_reader::NoteReader;
 pub use note_view::NoteView;
 pub use password_form::{PasswordEntry, PasswordForm, PasswordPurpose};
 pub use share_dialog::{ShareDialog, ShareDialogEvent, ShareState};
 pub use sidebar::{AppSidebar, SidebarEvent};
 pub use title_bar::AppTitleBar;
 pub use unlock::{UnlockEvent, UnlockScreen};
+pub use welcome::{WelcomeEvent, WelcomeScreen};
 
 use gpui_kit::component::kbd::Kbd;
 

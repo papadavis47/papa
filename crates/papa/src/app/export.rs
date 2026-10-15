@@ -1,5 +1,7 @@
 //! PDF export's side of `PapaApp`: asking where to save, reading the notes
 //! and photos from the vault, and laying out the PDF in the background.
+//! The child's app exports through [`save_pdf`] too, with notes from the
+//! share.
 //!
 //! ```text
 //!  UI thread                     database thread        background thread
@@ -25,7 +27,7 @@ use gpui_kit::component::{
 use gpui_kit::{App, AsyncWindowContext, Context, SharedString, Window};
 use jiff::tz::TimeZone;
 use papa_core::{Note, NoteId, Store, paths};
-use papa_pdf::Photo;
+use papa_pdf::{Document, Photo};
 
 use super::{ExportNote, ExportNotes, PapaApp, Vault};
 use crate::export::{self, Scope};
@@ -87,66 +89,103 @@ impl PapaApp {
         let Vault::Open { store, .. } = &self.vault else {
             return;
         };
-        if self.exporting.is_some() {
-            window.push_notification(
-                Notification::info("Wait for it to finish, then try again.")
-                    .title("An export is already running"),
-                cx,
-            );
-            return;
-        }
         let store = store.clone();
         let children = self.children.clone();
         let what = export::describe(&scope, &children);
         let name = export::file_name(&scope, title, &children);
-        let dir = paths::export_dir();
-        let chosen = cx.prompt_for_new_path(&dir, Some(&name));
-
-        cx.spawn_in(window, async move |this, cx| {
-            // The outer `Result` fails if the dialog went away without an
-            // answer; the inner one if it couldn't open. `None` is Cancel.
-            let (path, no_dialog) = match chosen.await {
-                Ok(Ok(Some(path))) => (path, None),
-                Ok(Ok(None)) | Err(_) => return,
-                // Some Linux desktops have no save dialog to offer (it comes
-                // from a "portal" service). Rather than fail, save in the
-                // Documents folder under a name that's free.
-                Ok(Err(err)) => (export::unused_path(&dir, &name, Path::exists), Some(err)),
-            };
-            let status = SharedString::from(format!("Exporting {what}…"));
-            this.update(cx, |this, cx| {
-                this.exporting = Some(status);
-                cx.notify();
-            })
-            .ok();
-
-            let result = run(&store, &scope, &children, path, cx).await;
-
-            this.update_in(cx, |this, window, cx| {
-                this.exporting = None;
-                cx.notify();
-                exported(result, &what, no_dialog, window, cx);
-            })
-            .ok();
-        })
-        .detach();
+        let document = async move |cx: &mut AsyncWindowContext| {
+            let notes = load(&store, scope.note_ids())
+                .await
+                .context("couldn't read the notes")?;
+            let paper = cx.update(|_, cx| AppSettings::get(cx).export.paper)?;
+            Ok(export::document(
+                &scope,
+                notes,
+                &children,
+                paper,
+                &TimeZone::system(),
+            ))
+        };
+        save_pdf(
+            self,
+            |this| &mut this.exporting,
+            what,
+            name,
+            document,
+            window,
+            cx,
+        );
     }
 }
 
-/// Reads the notes, lays the PDF out on a background thread and writes it
-/// to `path`. Returns where it went.
-async fn run(
-    store: &Store,
-    scope: &Scope,
-    children: &[papa_core::Child],
+/// Asks where to save `name`, then saves the PDF of what `document`
+/// builds there: "Exporting {what}…" in the status bar meanwhile, which
+/// `exporting` says where `V` keeps, and a notification at the end. One
+/// export at a time.
+///
+/// Generic over the view, so both modes' apps share it: `exporting` is a
+/// plain function that picks the field out of whichever view it is.
+pub(crate) fn save_pdf<V: 'static>(
+    view: &mut V,
+    exporting: fn(&mut V) -> &mut Option<SharedString>,
+    what: String,
+    name: String,
+    document: impl AsyncFnOnce(&mut AsyncWindowContext) -> anyhow::Result<Document> + 'static,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    if exporting(view).is_some() {
+        window.push_notification(
+            Notification::info("Wait for it to finish, then try again.")
+                .title("An export is already running"),
+            cx,
+        );
+        return;
+    }
+    let dir = paths::export_dir();
+    let chosen = cx.prompt_for_new_path(&dir, Some(&name));
+
+    cx.spawn_in(window, async move |this, cx| {
+        // The outer `Result` fails if the dialog went away without an
+        // answer; the inner one if it couldn't open. `None` is Cancel.
+        let (path, no_dialog) = match chosen.await {
+            Ok(Ok(Some(path))) => (path, None),
+            Ok(Ok(None)) | Err(_) => return,
+            // Some Linux desktops have no save dialog to offer (it comes
+            // from a "portal" service). Rather than fail, save in the
+            // Documents folder under a name that's free.
+            Ok(Err(err)) => (export::unused_path(&dir, &name, Path::exists), Some(err)),
+        };
+        let status = SharedString::from(format!("Exporting {what}…"));
+        this.update(cx, |this, cx| {
+            *exporting(this) = Some(status);
+            cx.notify();
+        })
+        .ok();
+
+        let result = async {
+            let document = document(cx).await?;
+            render(document, path, cx).await
+        }
+        .await;
+
+        this.update_in(cx, |this, window, cx| {
+            *exporting(this) = None;
+            cx.notify();
+            exported(result, &what, no_dialog, window, cx);
+        })
+        .ok();
+    })
+    .detach();
+}
+
+/// Lays the PDF out on a background thread and writes it to `path`.
+/// Returns where it went.
+async fn render(
+    document: Document,
     path: PathBuf,
     cx: &mut AsyncWindowContext,
 ) -> anyhow::Result<PathBuf> {
-    let notes = load(store, scope.note_ids())
-        .await
-        .context("couldn't read the notes")?;
-    let paper = cx.update(|_, cx| AppSettings::get(cx).export.paper)?;
-    let document = export::document(scope, notes, children, paper, &TimeZone::system());
     // Laying out a long book takes seconds of CPU: off the UI thread, so
     // the window stays responsive meanwhile.
     cx.background_executor()

@@ -8,35 +8,70 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{App, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, div};
 
 use super::shortcut;
-use crate::app::{APP_CONTEXT, LockVault, ToggleCommandPalette, ToggleSidebar, ToggleTheme};
+use crate::app::{
+    APP_CONTEXT, LockVault, SyncNow, ToggleCommandPalette, ToggleSidebar, ToggleTheme,
+};
 
-/// The custom title bar: sidebar toggle and app name on the left, the
-/// command palette, the lock and the theme toggle on the right. While the
-/// vault is locked, only the name and the theme toggle show.
+/// The custom title bar. The app's name and the theme toggle are always
+/// there; the rest depends on the mode:
+///
+/// - **Father:** the sidebar toggle on the left; the command palette and
+///   the lock on the right. While the vault is locked, neither shows.
+/// - **Child:** "Check for new notes" on the right.
+/// - **Welcome:** nothing else yet.
 ///
 /// The buttons dispatch the same actions as the keyboard shortcuts, so both
 /// paths run the same handler.
 #[derive(IntoElement)]
 pub struct AppTitleBar {
-    sidebar_visible: bool,
-    locked: bool,
-    /// The vault has a password, so it can be locked.
-    encrypted: bool,
+    mode: Mode,
+}
+
+enum Mode {
+    Father {
+        sidebar_visible: bool,
+        locked: bool,
+        /// The vault has a password, so it can be locked.
+        encrypted: bool,
+    },
+    Child,
+    Welcome,
 }
 
 impl AppTitleBar {
     pub fn new(sidebar_visible: bool, locked: bool, encrypted: bool) -> Self {
         Self {
-            sidebar_visible,
-            locked,
-            encrypted,
+            mode: Mode::Father {
+                sidebar_visible,
+                locked,
+                encrypted,
+            },
+        }
+    }
+
+    pub fn child() -> Self {
+        Self { mode: Mode::Child }
+    }
+
+    pub fn welcome() -> Self {
+        Self {
+            mode: Mode::Welcome,
         }
     }
 }
 
 impl RenderOnce for AppTitleBar {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let sidebar_icon = if self.sidebar_visible {
+        let (sidebar_visible, locked, encrypted, father) = match self.mode {
+            Mode::Father {
+                sidebar_visible,
+                locked,
+                encrypted,
+            } => (sidebar_visible, locked, encrypted, true),
+            Mode::Child | Mode::Welcome => (false, false, false, false),
+        };
+        let child = matches!(self.mode, Mode::Child);
+        let sidebar_icon = if sidebar_visible {
             IconName::PanelLeftClose
         } else {
             IconName::PanelLeftOpen
@@ -56,7 +91,7 @@ impl RenderOnce for AppTitleBar {
                 .child(
                     h_flex()
                         .gap_1()
-                        .when(!self.locked, |this| {
+                        .when(father && !locked, |this| {
                             this.child(
                                 Button::new("toggle-sidebar")
                                     .ghost()
@@ -77,7 +112,7 @@ impl RenderOnce for AppTitleBar {
                 .child(
                     h_flex()
                         .gap_1()
-                        .when(!self.locked, |this| {
+                        .when(father && !locked, |this| {
                             this.child(
                                 Button::new("command-palette")
                                     .ghost()
@@ -91,7 +126,23 @@ impl RenderOnce for AppTitleBar {
                                     }),
                             )
                         })
-                        .when(self.encrypted, |this| {
+                        .when(child, |this| {
+                            this.child(
+                                Button::new("check-notes")
+                                    .ghost()
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::RefreshCw)
+                                    .tooltip_with_action(
+                                        "Check for new notes",
+                                        &SyncNow,
+                                        Some(APP_CONTEXT),
+                                    )
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(SyncNow), cx)
+                                    }),
+                            )
+                        })
+                        .when(encrypted, |this| {
                             this.child(
                                 Button::new("lock")
                                     .ghost()

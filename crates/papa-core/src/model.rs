@@ -146,6 +146,50 @@ pub struct NoteSummary {
     pub created_at: Timestamp,
 }
 
+/// A note as a child reads it: decrypted from the share, without the
+/// father's labels or the other children it's about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedNote {
+    pub id: NoteId,
+    pub title: String,
+    /// Markdown.
+    pub body: String,
+    /// The note's images, in order.
+    pub images: Vec<ImageId>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+impl SharedNote {
+    /// The note as the list shows it.
+    pub fn summary(&self) -> NoteSummary {
+        NoteSummary {
+            id: self.id,
+            title: self.title.clone(),
+            preview: preview(&self.body),
+            children: Vec::new(),
+            labels: Vec::new(),
+            images: self.images.len(),
+            created_at: self.created_at,
+        }
+    }
+
+    /// As a [`Note`] about nobody in particular, for code that prints
+    /// either kind (PDF export).
+    pub fn to_note(&self) -> Note {
+        Note {
+            id: self.id,
+            title: self.title.clone(),
+            body: self.body.clone(),
+            children: Vec::new(),
+            labels: Vec::new(),
+            shared_with: Vec::new(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+}
+
 /// The father's account on the relay, which sharing needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {

@@ -21,9 +21,9 @@ use gpui_kit::{
     ObjectFit, ParentElement as _, Render, SharedString, Styled as _, StyledImage as _, Window,
     div, hsla, img,
 };
-use papa_core::{ImageId, Store};
+use papa_core::ImageId;
 
-use super::gallery::{GalleryImage, gpui_image, release};
+use super::gallery::{GalleryImage, ImageSource, gpui_image, release};
 use super::sentence;
 
 gpui_kit::actions!(
@@ -49,7 +49,7 @@ pub enum LightboxEvent {
 }
 
 pub struct Lightbox {
-    store: Store,
+    source: ImageSource,
     images: Vec<GalleryImage>,
     /// The image shown, or `None` while closed.
     index: Option<usize>,
@@ -66,9 +66,9 @@ pub struct Lightbox {
 impl EventEmitter<LightboxEvent> for Lightbox {}
 
 impl Lightbox {
-    pub fn new(store: Store, cx: &mut Context<Self>) -> Self {
+    pub fn new(source: ImageSource, cx: &mut Context<Self>) -> Self {
         Self {
-            store,
+            source,
             images: Vec::new(),
             index: None,
             display: HashMap::new(),
@@ -144,15 +144,15 @@ impl Lightbox {
         cx.notify();
     }
 
-    /// Fetches an image's full-size version from the vault, unless it's
-    /// here or on its way.
+    /// Fetches an image's full-size version, unless it's here or on its
+    /// way.
     fn load(&mut self, id: ImageId, window: &mut Window, cx: &mut Context<Self>) {
         if self.display.contains_key(&id) || !self.loading.insert(id) {
             return;
         }
-        let store = self.store.clone();
+        let source = self.source.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = store.display_image(id).await;
+            let result = source.display_image(id).await;
             this.update_in(cx, |this, window, cx| {
                 this.loading.remove(&id);
                 match result {
@@ -224,6 +224,7 @@ impl Render for Lightbox {
         .id(SharedString::from(format!("lightbox-{}", image.id)));
         // White on near-black in both themes, like any photo viewer.
         let muted = hsla(0., 0., 1., 0.7);
+        let deletable = self.source.store().is_some();
 
         v_flex()
             // Fills the window and swallows clicks and scrolls, so nothing
@@ -248,14 +249,16 @@ impl Render for Lightbox {
                     .child(format!("{} of {count}", index + 1))
                     .child(format!("{} × {}", image.width, image.height))
                     .child(div().flex_1())
-                    .child(
-                        overlay_button("lightbox-delete", cx)
-                            .icon(gpui_kit::assets::IconName::Trash)
-                            .tooltip("Delete image")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(LightboxEvent::Delete(image.id));
-                            })),
-                    )
+                    .when(deletable, |bar| {
+                        bar.child(
+                            overlay_button("lightbox-delete", cx)
+                                .icon(gpui_kit::assets::IconName::Trash)
+                                .tooltip("Delete image")
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(LightboxEvent::Delete(image.id));
+                                })),
+                        )
+                    })
                     .child(
                         overlay_button("lightbox-close", cx)
                             .icon(IconName::Close)

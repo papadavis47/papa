@@ -27,6 +27,18 @@ pub fn shares_dir(vault: &Path) -> PathBuf {
         .join("shares")
 }
 
+/// Where a child's app keeps what Dad shared: `child/` next to the vault,
+/// or where the vault would be. It holds the sign-in (`session.json`) and
+/// the replica of the share database (`share.db`), which is ciphertext.
+/// [`PAPA_VAULT`](VAULT_ENV) moves it along with the vault, so development
+/// never touches a real child's copy either.
+pub fn child_dir(vault: &Path) -> PathBuf {
+    vault
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("child")
+}
+
 /// Overrides the config folder, which holds `settings.json` and `themes/`.
 /// Like [`VAULT_ENV`], it keeps development away from the real settings.
 pub const CONFIG_ENV: &str = "PAPA_CONFIG_DIR";

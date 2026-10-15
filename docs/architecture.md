@@ -18,6 +18,22 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 
 ## Desktop app
 
+The window's root, `PapaWindow` (`mode.rs`), holds one of Papa's two modes, or the choice between them:
+
+```diagram
+PapaWindow ── Mode::Opening   reading a child's saved sign-in (offline too)
+           ├─ Mode::Welcome   WelcomeScreen: "Start my own vault" or
+           │                  "Open notes shared with me" (Dad's email + key)
+           ├─ Mode::Father    PapaApp, below
+           └─ Mode::Child     ChildApp: NoteList (read-only) · NoteReader
+                              (title, date, Markdown, read-only Gallery) ·
+                              status bar; owns a ChildSession
+```
+
+A vault on disk opens father mode; a child's sign-in, child mode; neither, the welcome screen. Each mode is its own type, so nothing of the father's exists while a child's notes are open ([ADR 0016](adr/0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md)). `Gallery` and `Lightbox` take an `ImageSource`: `Vault(Store)` can add and delete images, `Shared(ChildSession)` only shows them. `ModeStatus`, a global, tells the Settings window which pages apply: Appearance, Shared with me and Data in child mode.
+
+The father's mode:
+
 ```diagram
 ┌─ PapaApp (Entity, Render) ─────────────────────────────────────────┐
 │ owns: Vault (Opening / Locked / Open(Store) / Failed), children,   │
@@ -137,6 +153,7 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 | ⌘P | Export the open note to PDF |
 | ⌘⇧P | Export the notes in the list to PDF (a child's book when the list shows that child) |
 | ⌘K | Command palette: run a command, go to a child or label, open a note, assign the open note |
+| ⌘R | Sync shared notes now; in child mode, check for new notes |
 | ⌘1 / ⌘2 / ⌘3 | Focus the sidebar / note list / note |
 | → or Enter (sidebar) | Focus the note list |
 | → or Enter (note list) | Focus the note; Enter in the search box too |
@@ -158,6 +175,7 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 | Settings | `~/.config/papa/settings.json` / `~/Library/Application Support/papa/settings.json` | `PAPA_CONFIG_DIR` (a folder) |
 | Your themes | `themes/` next to `settings.json` | `PAPA_CONFIG_DIR` |
 | Share replicas (ciphertext only) | `shares/<child id>.db` next to the vault | `PAPA_VAULT` |
+| A child's sign-in and replica | `child/session.json` and `child/share.db` next to where the vault would be | `PAPA_VAULT` |
 
 ## Local storage
 
@@ -250,7 +268,7 @@ cargo run -p papa-relay -- admin invite create "Me"           # prints an invite
 
 ## Sharing
 
-The father's side is built (Phase 11, [ADR 0015](adr/0015-sharing-keys-and-idempotent-projection.md)); the child's side and messages come in Phases 12 and 13.
+The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-projection.md)), the child's Phase 12 ([ADR 0016](adr/0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md)); messages come in Phase 13.
 
 ```diagram
  UI thread ──▶ Sharing (papa-sharing thread, tokio with IO)
@@ -268,6 +286,19 @@ The father's side is built (Phase 11, [ADR 0015](adr/0015-sharing-keys-and-idemp
 - **A new key** is stored in the vault first (marked stale until the relay has it), then sent to the relay, then everything is resealed under the next epoch at the next sync. **Stopping** deletes the cloud database, then the replica and the vault's record.
 - **In the app** (`app/sharing.rs`): the sign-in dialog (`AccountForm`), a child's sharing dialog (`ShareDialog`: start, copy the key, new key, stop), "{child} can read it" in a note's + popover and in ⌘K, a cloud next to shared children in the sidebar, and the last sync in the status bar. A note change schedules a sync 3 s later, debounced like autosave; opening the vault syncs once. `PapaApp` publishes an `AccountStatus` global for the Settings window's Sharing page.
 - **TLS:** Turso's sync and the relay client both use rustls, and the workspace builds two crypto providers into it, so `papa-core` installs `aws-lc-rs` as the process default before any connection.
+
+**The child's side** (`papa-core::ChildSession`, on a `papa-child` thread):
+
+```diagram
+ sign in: key card ──Argon2id/HKDF──▶ auth_key ──relay──▶ share id + token
+          ──turso sync──▶ child/share.db (new replica) ──▶ decrypt ──▶ session.json saved
+ open:    session.json ──▶ child/share.db, no network ──▶ decrypt the last pull
+ pull:    token (renewed every 15 min) ──▶ replica.pull() ──▶ decrypt if anything changed
+```
+
+- **Decrypting** mirrors sealing: `enc_key` unwraps the newest `share_key`, which opens each row of that epoch. Rows of an older epoch wait for Dad's next sync. A key the relay accepts but that can't unwrap the share means Dad's app hasn't resealed yet: the app says it's waiting.
+- **A refused key:** after a failed pull, or one that brings a share the key can't open, the relay is asked again at once. If it refuses (a new key, or sharing stopped), the app says so and offers to sign in again.
+- **The key card** is the access key, plus `@server` unless the share is on Papa's own server: `PAPA-…@papa.example.org`. The father's sharing dialog shows and copies it.
 
 | Vault table (v4) | Columns |
 |---|---|
@@ -295,6 +326,7 @@ The father's side is built (Phase 11, [ADR 0015](adr/0015-sharing-keys-and-idemp
 - **GPUI's background thread pool:** CPU-heavy work handed off with `cx.background_spawn`: preparing images, laying out and writing PDFs, and GPUI's own image decoding. Saving `settings.json` runs there too.
 - **`papa-store` thread:** owns the database connection and runs a single-threaded tokio runtime. It exits when the last `Store` handle is dropped.
 - **`papa-sharing` thread:** a single-threaded tokio runtime with IO, for the relay client and Turso's sync; it owns the share replicas. Each open replica adds Turso's own `turso-sync-io` thread. It stops when the vault closes and its `Sharing` handle is dropped.
+- **`papa-child` thread** (child mode only): the same, for the child's one replica, the relay client and decrypting. It stops with the last `ChildSession` handle.
 
 ## Security model
 

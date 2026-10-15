@@ -28,7 +28,7 @@ use jiff::tz::TimeZone;
 use papa_core::settings::{Density, NoteMode};
 use papa_core::{Child, ChildId, Label, LabelId, Note, NoteId, Store};
 
-use super::gallery::{Gallery, GalleryEvent};
+use super::gallery::{Gallery, GalleryEvent, ImageSource};
 use super::{NoteView, dates, dialogs, sentence};
 use crate::app::{APP_CONTEXT, ExportNote, FocusNoteList, NOTE_EDITOR_CONTEXT};
 use crate::settings::AppSettings;
@@ -107,7 +107,7 @@ impl NoteEditor {
                 .placeholder("Write about the day… Markdown works: **bold**, # Heading, - list")
                 .soft_wrap(true)
         });
-        let gallery = cx.new(|cx| Gallery::new(store.clone(), window, cx));
+        let gallery = cx.new(|cx| Gallery::new(ImageSource::Vault(store.clone()), window, cx));
         let subscriptions = vec![
             cx.subscribe_in(&title, window, Self::on_title_event),
             cx.subscribe_in(&body, window, Self::on_body_event),

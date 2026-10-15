@@ -106,7 +106,7 @@ Turso Cloud has no row-level security. Its recommended pattern is **one database
   - The Turso Platform token lives only on the server.
 - **Self-hosting stays possible but isn't built yet:**
   - The app reads the relay URL from settings.
-  - The relay URL is part of the child's access key, so children never type it. (Not yet: Phase 11's key carries only the secret; Phase 12, which reads keys, picks the format.)
+  - The relay URL is part of the child's access key, so children never type it. As built in Phase 12 ([ADR 0016](docs/adr/0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md)): the server follows the key after an `@` (`PAPA-…@papa.example.org`), unless it's Papa's own.
   - A "use my own server" option could be added later without changing the design.
 - **Before inviting friends:** a short privacy policy and an "export / delete my account" function. The relay stores emails and metadata even though content is encrypted.
 
@@ -232,6 +232,7 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
 - **First launch** asks: *"Start my own vault"* or *"Open notes shared with me"*.
 - **Sign in:** with Dad's email and the access key.
 - **Child view:** the same layout, read-only, with a single child and no editor. Children can't comment on notes; they talk to Dad only through Messages. It shows the note list, note view, Messages, Settings and **Export PDF** (one note, a selection, or everything).
+- **As built in Phase 12** ([ADR 0016](docs/adr/0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md)): two panes (list and note) until Messages needs a sidebar; the replica in `child/` next to the vault is the offline cache; it checks for new notes on opening, every minute and on ⌘R; the list, a search, or one note export to PDF.
 
 **Messages**
 - A chat thread per child, built with the `MessageGroup` and `Bubble` components.

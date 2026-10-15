@@ -98,6 +98,16 @@ With `tursodb` and the relay running as above, start the app, then:
 
 Papa encrypts the shared notes on your computer, writes them to `shares/<child>.db` next to the vault, and pushes them a few seconds after each change. The status bar shows the last sync.
 
+### Reading shared notes (child's side)
+
+A child uses the same app. On a computer with no vault, Papa asks what you'd like to do; to try it next to your own vault, give it another folder:
+
+```sh
+PAPA_VAULT=/tmp/papa-child/vault.db cargo run
+```
+
+Choose "Open notes shared with me", type Dad's email and paste the key from his sharing dialog. Papa downloads the share to `child/share.db` next to where the vault would be, decrypts it, and shows the notes read-only. ⌘R checks for new ones (it also does every minute), ⌘P and ⌘⇧P export to PDF, and the notes stay readable offline. If Dad makes a new key, the app says the old one stopped working and asks for the new one.
+
 Some tests start `tursodb` to sync for real. They look for it on the `PATH` (or in `$TURSODB`) and skip when it's missing; CI installs it and sets `PAPA_REQUIRE_TURSODB=1`, so there they can't skip.
 
 ## Privacy

@@ -159,6 +159,10 @@ pub enum Error {
     #[error("sign in to your Papa account first, in Settings → Sharing")]
     NotSignedIn,
 
+    /// A child's app was asked to read before anyone signed in to a share.
+    #[error("not signed in to the notes shared with you")]
+    ChildSignedOut,
+
     #[error("sharing with this child was set up on {0}; sign in to that server to manage it")]
     WrongRelay(String),
 

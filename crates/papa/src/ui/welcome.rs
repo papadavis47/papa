@@ -18,7 +18,7 @@ use gpui_kit::{
     px,
 };
 use papa_core::share::KeyCard;
-use papa_core::{ChildSession, Error, SharedNotes};
+use papa_core::{ChildSession, Error, ShareContents};
 use papa_proto::ErrorCode;
 
 use super::empty_state::EmptyState;
@@ -28,7 +28,7 @@ pub enum WelcomeEvent {
     /// "Start my own vault": father mode, with a new vault.
     StartVault,
     /// A child signed in: child mode, with what they can read.
-    SignedIn(ChildSession, SharedNotes),
+    SignedIn(ChildSession, ShareContents),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

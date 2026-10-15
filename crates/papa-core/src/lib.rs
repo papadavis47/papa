@@ -11,12 +11,11 @@
 //! - [`share`]: access keys, the keys derived from them, sealing notes for
 //!   a child's cloud database, and the share projection.
 //! - [`Sharing`]: the father's side of sharing, on its own thread: his
-//!   relay account, each child's share, and syncing it.
+//!   relay account, each child's share, and syncing it, messages included.
 //! - [`ChildSession`]: the child's side of sharing, on its own thread:
-//!   signing in with Dad's email and a key, pulling, and decrypting.
+//!   signing in with Dad's email and a key, pulling, decrypting, and
+//!   writing to Dad.
 //! - [`relay`]: the relay's HTTP API.
-//!
-//! Planned (see `PLAN.md`): messages.
 
 pub mod backup;
 mod child_session;
@@ -33,12 +32,13 @@ mod sharing;
 mod store;
 mod tls;
 
-pub use child_session::{ChildSession, SharedNotes};
+pub use child_session::{ChildSession, ShareContents};
 pub use error::{Error, Result};
 pub use images::PreparedImage;
 pub use model::{
-    Account, Child, ChildDraft, ChildId, ChildShare, EncodedImage, ImageFormat, ImageId, Label,
-    LabelId, Note, NoteDraft, NoteFilter, NoteId, NoteImage, NoteQuery, NoteSummary, SharedNote,
+    Account, Child, ChildDraft, ChildId, ChildShare, ConversationSummary, EncodedImage,
+    ImageFormat, ImageId, Label, LabelId, Message, MessageId, Note, NoteDraft, NoteFilter, NoteId,
+    NoteImage, NoteQuery, NoteSummary, Sender, SharedNote,
 };
 pub use sharing::{Sharing, SyncReport};
 pub use store::Store;

@@ -116,6 +116,7 @@ impl Db {
             "account",
             "share",
             "note_share",
+            "message",
         ] {
             let mut rows = self
                 .conn

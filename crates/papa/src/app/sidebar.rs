@@ -6,7 +6,8 @@ use std::rc::Rc;
 use gpui_kit::{ClickEvent, Context, Window};
 use papa_core::{Child, ChildDraft, ChildId, Label, LabelId, NoteFilter};
 
-use super::{PapaApp, SelectNextFilter, SelectPreviousFilter};
+use super::{OpenMessages, PapaApp, SelectNextFilter, SelectPreviousFilter};
+use crate::state::Pane;
 use crate::ui::{SidebarEvent, dialogs, suggested_color};
 
 impl PapaApp {
@@ -58,6 +59,7 @@ impl PapaApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pane = Pane::Notes;
         self.selection.filter = filter;
         self.refresh_notes(window, cx);
         cx.notify();
@@ -82,6 +84,11 @@ impl PapaApp {
     }
 
     fn move_filter(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        // From Messages, the arrows go back to the notes they left.
+        if self.pane == Pane::Messages {
+            self.select_filter(self.selection.filter, window, cx);
+            return;
+        }
         let before = self.selection.filter;
         self.selection.move_filter(delta, &self.filters());
         if self.selection.filter != before {
@@ -225,6 +232,10 @@ impl PapaApp {
                 );
             }
             SidebarEvent::ShareChild(id) => self.open_share_dialog(id, window, cx),
+            SidebarEvent::Messages => {
+                self.sidebar_focus.focus(window, cx);
+                self.open_messages(&OpenMessages, window, cx);
+            }
             SidebarEvent::DeleteChild(id) => {
                 let Some(child) = self.child(id) else { return };
                 dialogs::confirm_delete(

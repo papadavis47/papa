@@ -4,8 +4,11 @@
 //!
 //! Turso's sync keeps a log of what changed locally since the last push;
 //! `push` sends it, `pull` fetches what others wrote. Only the father
-//! writes notes, and only children will write messages, so the two never
-//! write the same row and last-push-wins never has to pick a winner.
+//! writes notes; each message row is written by its sender, and each
+//! receipt by the message's recipient. So the two never write the same
+//! row and last-push-wins never has to pick a winner. (After a new key
+//! the father seals the child's messages again; the child never changes
+//! a row once written.)
 //!
 //! The schema (PLAN.md §4, as built):
 //!
@@ -15,6 +18,8 @@
 //! | `share_key` | the content key, wrapped under the access key | epoch |
 //! | `shared_note` | one sealed [`NotePayload`](super::NotePayload) per note | id, `updated_at`, epoch, size |
 //! | `shared_blob` | sealed image versions | ids, kind, epoch, size |
+//! | `message` | sealed messages, both ways | id, sender, time, epoch, size |
+//! | `receipt` | which messages were read | message id, time read |
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -24,13 +29,15 @@ use papa_proto::Secret;
 use turso::{Connection, Row, Value};
 
 use super::Sealed;
+use super::message::{MessageVersion, SealedMessage};
 use super::projection::{BlobKind, Manifest, NoteVersion, SealedNote, ShareChanges};
-use crate::{Error, ImageId, NoteId, Result};
+use crate::{Error, ImageId, MessageId, NoteId, Result, Sender};
 
 /// Migration `n` (from 1) brings a share database from version `n - 1` to
 /// `n`. Append only, as for the vault. The version lives in a table rather
 /// than `PRAGMA user_version`, which is in the file header and doesn't sync.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE share_schema (version INTEGER NOT NULL) STRICT;
 
     -- The content key of each epoch, wrapped under the child's enc_key.
@@ -62,7 +69,29 @@ const MIGRATIONS: &[&str] = &["
         ciphertext BLOB NOT NULL,
         PRIMARY KEY (id, kind)
     ) STRICT;
-"];
+",
+    "
+    -- Messages, both ways (Phase 13). Each row is written by its sender;
+    -- the father's app seals them all again after a new key.
+    CREATE TABLE message (
+        id         TEXT PRIMARY KEY NOT NULL,
+        sender     TEXT NOT NULL CHECK (sender IN ('father', 'child')),
+        created_at INTEGER NOT NULL,
+        key_epoch  INTEGER NOT NULL,
+        nonce      BLOB NOT NULL,
+        ciphertext BLOB NOT NULL
+    ) STRICT;
+
+    -- A message's recipient read it. Written once, by the recipient.
+    CREATE TABLE receipt (
+        message_id TEXT PRIMARY KEY NOT NULL,
+        read_at    INTEGER NOT NULL
+    ) STRICT;
+",
+];
+
+/// The first schema version with messages.
+pub(crate) const MESSAGES_VERSION: i64 = 2;
 
 /// The schema version this build writes.
 const LATEST: i64 = MIGRATIONS.len() as i64;
@@ -86,20 +115,21 @@ impl Replica {
     /// Opens the replica at `path`, creating it from the cloud database at
     /// `url` if it doesn't exist yet, and brings its schema up to date.
     pub(crate) async fn open(path: &Path, url: &str, token: TokenCell) -> Result<Self> {
-        let mut replica = Self::open_for_reading(path, url, token).await?;
+        let mut replica = Self::open_as_child(path, url, token).await?;
         replica.migrate().await?;
         Ok(replica)
     }
 
-    /// Opens a child's replica: like [`open`](Self::open), but it never
-    /// writes. The schema is the father's to make; until his first sync,
-    /// the database is empty.
+    /// Opens a child's replica: like [`open`](Self::open), but it leaves
+    /// the schema alone. That's the father's to make; until his first
+    /// sync, the database is empty. A child only ever adds messages and
+    /// receipts.
     ///
     /// A replica that exists opens without the network, from what the
     /// last pull left: the child's notes, offline. Creating one needs the
     /// server, and a failed attempt can leave files behind (see
     /// [`remove_files`]).
-    pub(crate) async fn open_for_reading(path: &Path, url: &str, token: TokenCell) -> Result<Self> {
+    pub(crate) async fn open_as_child(path: &Path, url: &str, token: TokenCell) -> Result<Self> {
         crate::tls::init();
         let path = path
             .to_str()
@@ -188,6 +218,15 @@ impl Replica {
             let kind: BlobKind = row.get::<String>(1)?.parse()?;
             manifest.blobs.insert((id, kind), row.get(2)?);
         }
+        drop(rows);
+        for message in self.sealed_messages(None).await? {
+            let version = MessageVersion {
+                sender: message.sender,
+                epoch: message.epoch,
+            };
+            manifest.messages.insert(message.id, version);
+        }
+        manifest.receipts = self.receipts().await?.into_iter().collect();
         Ok(manifest)
     }
 
@@ -272,6 +311,12 @@ impl Replica {
             )
             .await?;
         }
+        for message in &changes.messages {
+            insert_message(&tx, message).await?;
+        }
+        for (id, read_at) in &changes.receipts {
+            insert_receipt(&tx, *id, *read_at).await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -286,6 +331,84 @@ impl Replica {
     /// anything did.
     pub(crate) async fn pull(&self) -> Result<bool> {
         in_time(self.db.pull()).await
+    }
+
+    /// How many local changes the cloud doesn't have yet. Reads only the
+    /// local file.
+    pub(crate) async fn unpushed(&self) -> Result<i64> {
+        Ok(in_time(self.db.stats()).await?.cdc_operations)
+    }
+
+    // --- Messages: both sides read them, both add to them. ---
+
+    /// Every message row, still sealed: only `sender`'s, if given.
+    pub(crate) async fn sealed_messages(
+        &self,
+        sender: Option<Sender>,
+    ) -> Result<Vec<SealedMessage>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id, sender, created_at, key_epoch, nonce, ciphertext FROM message \
+                 WHERE ?1 IS NULL OR sender = ?1",
+                [sender.map(Sender::as_str)],
+            )
+            .await?;
+        let mut messages = Vec::new();
+        while let Some(row) = rows.next().await? {
+            messages.push(SealedMessage {
+                id: parse(&row, 0, "message id")?,
+                sender: row.get::<String>(1)?.parse()?,
+                created_at: row.get(2)?,
+                epoch: row.get(3)?,
+                sealed: sealed(&row, 4)?,
+            });
+        }
+        Ok(messages)
+    }
+
+    /// Every receipt: which message was read, and when.
+    pub(crate) async fn receipts(&self) -> Result<Vec<(MessageId, i64)>> {
+        let mut rows = self
+            .conn
+            .query("SELECT message_id, read_at FROM receipt", ())
+            .await?;
+        let mut receipts = Vec::new();
+        while let Some(row) = rows.next().await? {
+            receipts.push((parse(&row, 0, "message id")?, row.get(1)?));
+        }
+        Ok(receipts)
+    }
+
+    /// Adds a message the child wrote: a plain insert, since a child's
+    /// token may add rows but not change them. The id is new, so nothing
+    /// is there to change.
+    pub(crate) async fn add_message(&self, message: &SealedMessage) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO message (id, sender, created_at, key_epoch, nonce, ciphertext) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (
+                    message.id.to_string(),
+                    message.sender.as_str(),
+                    message.created_at,
+                    message.epoch,
+                    message.sealed.nonce.as_slice(),
+                    message.sealed.ciphertext.as_slice(),
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Adds the child's receipts. One already there stays as it was.
+    pub(crate) async fn add_receipts(&mut self, receipts: &[(MessageId, i64)]) -> Result<()> {
+        let tx = self.conn.transaction().await?;
+        for (id, read_at) in receipts {
+            insert_receipt(&tx, *id, *read_at).await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     // --- Reading, on the child's side. Call `readable` first: a newer
@@ -358,6 +481,38 @@ impl Replica {
             None => Ok(None),
         }
     }
+}
+
+/// Writes a message row, or replaces it: with the same message sealed
+/// again, under a new key.
+async fn insert_message(conn: &Connection, message: &SealedMessage) -> Result<()> {
+    conn.execute(
+        "INSERT INTO message (id, sender, created_at, key_epoch, nonce, ciphertext) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (id) DO UPDATE SET \
+         key_epoch = excluded.key_epoch, nonce = excluded.nonce, \
+         ciphertext = excluded.ciphertext",
+        (
+            message.id.to_string(),
+            message.sender.as_str(),
+            message.created_at,
+            message.epoch,
+            message.sealed.nonce.as_slice(),
+            message.sealed.ciphertext.as_slice(),
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Writes a receipt, unless the message has one: a message is read once.
+async fn insert_receipt(conn: &Connection, id: MessageId, read_at: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO receipt (message_id, read_at) VALUES (?1, ?2) \
+         ON CONFLICT (message_id) DO NOTHING",
+        (id.to_string(), read_at),
+    )
+    .await?;
+    Ok(())
 }
 
 /// The nonce and ciphertext in columns `idx` and `idx + 1`.

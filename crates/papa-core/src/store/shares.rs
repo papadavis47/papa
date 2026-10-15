@@ -193,7 +193,8 @@ impl Db {
     // --- The projection ---
 
     /// What `manifest`'s database is missing, or has too much of, for
-    /// `child`'s share: notes and images sealed with the current key.
+    /// `child`'s share: notes, images and messages sealed with the current
+    /// key, and receipts for the messages the father read.
     ///
     /// Images are batched: once those sealed so far add up to `budget`
     /// bytes, the rest wait for the next call and `more` is set. Notes
@@ -313,11 +314,14 @@ impl Db {
             .copied()
             .collect();
         changes.removed_blobs.sort();
+
+        self.message_changes(child, &share_id, epoch, &key, manifest, &mut changes)
+            .await?;
         Ok(changes)
     }
 
     /// A share's id, key epoch and content key.
-    async fn share_secrets(&self, child: ChildId) -> Result<(String, i64, ContentKey)> {
+    pub(super) async fn share_secrets(&self, child: ChildId) -> Result<(String, i64, ContentKey)> {
         let mut rows = self
             .conn
             .query(

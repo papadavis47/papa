@@ -1,14 +1,15 @@
 //! The root view: owns the app's state and lays out the window.
 //!
 //! `PapaApp`'s methods are split by the pane they serve: `sidebar.rs`
-//! (children and labels) and `notes.rs` (the note list and the editor),
-//! and by feature: `export.rs` (PDF), `lock.rs` (the password, locking)
-//! and `backup.rs`. Rust allows several `impl` blocks for one type, in
+//! (children and labels), `notes.rs` (the note list and the editor) and
+//! `messages.rs` (the conversations), and by feature: `export.rs` (PDF),
+//! `lock.rs` (the password, locking), `backup.rs` and `sharing.rs`. Rust allows several `impl` blocks for one type, in
 //! different modules.
 
 mod backup;
 pub(crate) mod export;
 mod lock;
+mod messages;
 mod notes;
 mod palette;
 mod sharing;
@@ -17,6 +18,7 @@ mod sidebar;
 pub use lock::VaultStatus;
 pub use sharing::AccountStatus;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -38,15 +40,17 @@ use gpui_kit::{
 };
 use papa_core::lock::{Password, VaultKind};
 use papa_core::{
-    Account, Child, ChildShare, Label, NoteFilter, NoteSummary, Sharing, Store, paths,
+    Account, Child, ChildId, ChildShare, ConversationSummary, Label, NoteFilter, NoteSummary,
+    Sharing, Store, paths,
 };
 
 use crate::settings::AppSettings;
-use crate::state::Selection;
+use crate::state::{Pane, Selection};
 use crate::ui::lightbox::{CloseLightbox, LIGHTBOX_CONTEXT, NextImage, PreviousImage};
 use crate::ui::{
-    AppSidebar, AppTitleBar, COMMAND_PALETTE_CONTEXT, CommandPalette, EmptyNotes,
-    NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteListEvent, NoteView, UnlockScreen, sentence,
+    AppSidebar, AppTitleBar, COMMAND_PALETTE_CONTEXT, CommandPalette, Conversation,
+    ConversationList, EmptyNotes, NOTE_SEARCH_CONTEXT, NoteEditor, NoteList, NoteListEvent,
+    NoteView, UnlockScreen, sentence,
 };
 use crate::{settings_window, theme, vim};
 
@@ -111,6 +115,8 @@ gpui_kit::actions!(
         /// Sync shared notes now, rather than after the next change. In
         /// child mode: check for new notes.
         SyncNow,
+        /// Show the messages with your children. In child mode: with Dad.
+        OpenMessages,
     ]
 );
 
@@ -166,6 +172,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-l", LockVault, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-k", ToggleCommandPalette, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-r", SyncNow, Some(APP_CONTEXT)),
+        KeyBinding::new("secondary-shift-m", OpenMessages, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-1", FocusSidebar, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-2", FocusNoteList, Some(APP_CONTEXT)),
         KeyBinding::new("secondary-3", FocusEditor, Some(APP_CONTEXT)),
@@ -366,6 +373,19 @@ pub struct PapaApp {
     sync_task: Option<Task<()>>,
     /// The open sharing dialog, so the results of its buttons reach it.
     share_dialog: Option<(Entity<crate::ui::ShareDialog>, Subscription)>,
+    /// Notes or messages, right of the sidebar.
+    pane: Pane,
+    /// The child whose conversation is open, or was when the notes were
+    /// shown instead.
+    conversation_child: Option<ChildId>,
+    /// The open conversation. Made with the editor, when the vault opens.
+    conversation: Option<Entity<Conversation>>,
+    conversation_subscription: Option<Subscription>,
+    /// Each conversation's newest message and unread count. `Rc`, like
+    /// the lists above.
+    conversations: Rc<HashMap<ChildId, ConversationSummary>>,
+    /// Syncs every [`sharing::POLL_EVERY`], for messages.
+    _poll: Task<()>,
     /// What's being exported to PDF, for the status bar: "Exporting
     /// Emma’s book…". One export at a time.
     exporting: Option<SharedString>,
@@ -417,6 +437,10 @@ impl PapaApp {
             cx.observe_global::<AppSettings>(|_, cx| cx.notify()),
             // Typing anywhere, the Settings window included, counts as use.
             cx.observe_keystrokes(|this, _, _, _| this.last_activity = Instant::now()),
+            // Coming back to the window is when an open conversation is read.
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.mark_read_if_seen(window, cx)
+            }),
         ];
         // The window shows up immediately; this task waits for the database
         // thread without blocking the UI, then fills in the state. `this` is a
@@ -451,6 +475,12 @@ impl PapaApp {
             sync_status: sharing::SyncStatus::default(),
             sync_task: None,
             share_dialog: None,
+            pane: Pane::default(),
+            conversation_child: None,
+            conversation: None,
+            conversation_subscription: None,
+            conversations: Rc::default(),
+            _poll: Self::poll(window, cx),
             exporting: None,
             focus_handle: cx.focus_handle(),
             sidebar_focus,
@@ -471,6 +501,7 @@ impl PapaApp {
                 self.editor_subscription =
                     Some(cx.subscribe_in(&editor, window, Self::on_editor_event));
                 self.editor = Some(editor);
+                self.new_conversation(window, cx);
                 self.unlock_subscription = None;
                 self.set_vault(
                     Vault::Open {
@@ -488,6 +519,7 @@ impl PapaApp {
                 self.shares = Rc::new(opened.shares);
                 self.catalog_changed(window, cx);
                 self.sharing_changed(cx);
+                self.reload_messages(window, cx);
                 self.sidebar_focus.focus(window, cx);
                 // Whatever the last session didn't get to: syncing is
                 // always safe to repeat.
@@ -511,6 +543,14 @@ impl PapaApp {
 
     fn is_open(&self) -> bool {
         matches!(self.vault, Vault::Open { .. })
+    }
+
+    /// The open vault's store, for a task that handles its own errors.
+    fn store(&self) -> Option<Store> {
+        match &self.vault {
+            Vault::Open { store, .. } => Some(store.clone()),
+            _ => None,
+        }
     }
 
     /// Runs `job` against the store in the background, then hands its result
@@ -569,6 +609,12 @@ impl PapaApp {
     }
 
     fn focus_editor(&mut self, _: &FocusEditor, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pane == Pane::Messages {
+            if let Some(conversation) = &self.conversation {
+                conversation.update(cx, |conversation, cx| conversation.focus(window, cx));
+            }
+            return;
+        }
         if let Some(editor) = &self.editor {
             editor.update(cx, |editor, cx| editor.focus(window, cx));
         }
@@ -609,9 +655,48 @@ impl Render for PapaApp {
             .editor
             .as_ref()
             .and_then(|editor| editor.read(cx).vim_status(window, cx));
-        let editor = match &self.editor {
-            Some(editor) => editor.clone().into_any_element(),
-            None => NoteView::new(false).into_any_element(),
+        let messages = self.pane == Pane::Messages;
+        let editor = match (&self.editor, &self.conversation) {
+            (_, Some(conversation)) if messages && self.conversation_child.is_some() => {
+                conversation.clone().into_any_element()
+            }
+            (_, _) if messages => crate::ui::EmptyState::new(
+                "no-conversation",
+                IconName::Inbox,
+                "No conversation open",
+            )
+            .description("Pick a child from the list.")
+            .into_any_element(),
+            (Some(editor), _) => editor.clone().into_any_element(),
+            (None, _) => NoteView::new(false).into_any_element(),
+        };
+        let middle = if messages {
+            ConversationList::new(
+                self.conversation_entries(),
+                self.conversation_child,
+                cx.listener(|this, child: &ChildId, window, cx| {
+                    this.note_list_focus.focus(window, cx);
+                    this.select_conversation(Some(*child), window, cx)
+                }),
+            )
+            .focused(note_list_focused)
+            .into_any_element()
+        } else {
+            NoteList::new(
+                self.list_heading(),
+                self.notes.clone(),
+                self.children.clone(),
+                self.selection.note,
+                self.search.clone(),
+                self.note_scroll.clone(),
+                self.empty_notes(cx),
+                AppSettings::get(cx).appearance.density,
+                self.is_open(),
+                cx.listener(Self::on_note_list_event),
+            )
+            .export(self.list_export_name(cx))
+            .focused(note_list_focused)
+            .into_any_element()
         };
         // Last child, so it's drawn over the panes. Renders nothing while
         // closed.
@@ -643,6 +728,7 @@ impl Render for PapaApp {
             .on_action(cx.listener(Self::create_account))
             .on_action(cx.listener(Self::sign_out))
             .on_action(cx.listener(Self::sync_now))
+            .on_action(cx.listener(Self::open_messages))
             // Using the window keeps an encrypted vault from auto-locking.
             .on_mouse_move(cx.listener(|this, _, _, _| this.last_activity = Instant::now()))
             .capture_any_mouse_down(
@@ -682,10 +768,11 @@ impl Render for PapaApp {
                                                     &self.children,
                                                     &self.shared_children(),
                                                     &self.labels,
-                                                    self.selection.filter,
+                                                    (!messages).then_some(self.selection.filter),
                                                     self.is_open(),
                                                     cx.listener(Self::on_sidebar_event),
                                                 )
+                                                .messages(messages, self.unread())
                                                 .focused(sidebar_focused),
                                             ),
                                     ),
@@ -702,22 +789,7 @@ impl Render for PapaApp {
                                             .track_focus(&self.note_list_focus)
                                             .on_action(cx.listener(Self::select_next_note))
                                             .on_action(cx.listener(Self::select_previous_note))
-                                            .child(
-                                                NoteList::new(
-                                                    self.list_heading(),
-                                                    self.notes.clone(),
-                                                    self.children.clone(),
-                                                    self.selection.note,
-                                                    self.search.clone(),
-                                                    self.note_scroll.clone(),
-                                                    self.empty_notes(cx),
-                                                    AppSettings::get(cx).appearance.density,
-                                                    self.is_open(),
-                                                    cx.listener(Self::on_note_list_event),
-                                                )
-                                                .export(self.list_export_name(cx))
-                                                .focused(note_list_focused),
-                                            ),
+                                            .child(middle),
                                     ),
                             )
                             .child(resizable_panel().child(editor)),

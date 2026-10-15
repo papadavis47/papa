@@ -28,6 +28,8 @@ pub enum PaletteCommand {
     ToggleShared(ChildId),
     /// Open this child's sharing dialog.
     ShareChild(ChildId),
+    /// Open the conversation with this child.
+    Message(ChildId),
     SignIn,
     SignOut,
     SyncNow,
@@ -54,6 +56,7 @@ pub enum Shortcut {
     FocusEditor,
     ExportNote,
     ExportNotes,
+    OpenMessages,
     LockVault,
     ToggleSidebar,
     ToggleTheme,
@@ -189,6 +192,9 @@ fn actions(data: &PaletteData) -> PaletteGroup {
         PaletteItem::new("Delete note…", C::DeleteNote)
             .keywords(["remove", "trash"])
             .enabled(note),
+        PaletteItem::new("Messages", C::Shortcut(S::OpenMessages))
+            .keywords(["chat", "inbox", "write", "conversation"])
+            .enabled(open),
         PaletteItem::new("Add child…", C::AddChild)
             .keywords(["new", "son", "daughter", "kid"])
             .enabled(open),
@@ -327,11 +333,25 @@ fn sharing(data: &PaletteData) -> PaletteGroup {
         PaletteItem::new("Sign in to Papa…", PaletteCommand::SignIn)
             .keywords(["account", "log in", "server", "share"])
     };
+    let messages = data
+        .children
+        .iter()
+        .filter(|child| data.shared_children.contains(&child.id))
+        .map(|child| {
+            PaletteItem::new(
+                format!("Write to {}", child.name),
+                PaletteCommand::Message(child.id),
+            )
+            .keywords(["message", "chat", "conversation", "child"])
+        });
     let sync = PaletteItem::new("Sync shared notes now", PaletteCommand::SyncNow)
-        .keywords(["share", "upload", "cloud"])
+        .keywords(["share", "upload", "cloud", "messages"])
         .enabled(open && data.signed_in && !data.shared_children.is_empty());
     let items = if open {
-        children.chain([account.enabled(open), sync]).collect()
+        children
+            .chain(messages)
+            .chain([account.enabled(open), sync])
+            .collect()
     } else {
         Vec::new()
     };

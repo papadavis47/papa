@@ -1,6 +1,6 @@
 //! Sharing, the child's side: signing in with Dad's email and an access
-//! key, keeping a replica of the share, pulling what changed, and
-//! decrypting it.
+//! key, keeping a replica of the share, pulling what changed, decrypting
+//! it, and writing to Dad.
 //!
 //! Like [`Sharing`](crate::Sharing), an actor on a thread of its own,
 //! "papa-child": the relay client and Turso's sync need tokio's IO, and a
@@ -20,10 +20,16 @@
 //! new. The sign-in is kept next to it (`session.json`, readable only by
 //! the child's user account), so the app opens straight to the notes.
 //!
-//! The child's app only ever reads the share database. Its rows are the
-//! father's; Phase 13 adds the messages a child writes.
+//! **Messages.** The child's app reads the share's rows, which are the
+//! father's, and adds two kinds of its own: messages to Dad, and receipts
+//! for his. Both are new rows, never changes, so they can't collide with
+//! anything Dad's app writes. A message goes into the replica first, then
+//! out with a push; if that fails (offline, say), it waits there, and the
+//! next pull pushes it before pulling. Until then it's in the outbox
+//! (`outbox.json`), so the app can show it as "Sending…", even after a
+//! restart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,11 +39,16 @@ use papa_proto::Secret;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::model::clean_message;
 use crate::relay::RelayClient;
 use crate::share::projection::{BlobKind, SealedNote, decode_image};
-use crate::share::replica::{self, Replica, TokenCell};
-use crate::share::{Aad, AccessKey, ChildKeys, ContentKey, EncKey, KeyCard, NotePayload, Sealed};
-use crate::{EncodedImage, Error, ImageId, NoteId, NoteImage, Result, SharedNote};
+use crate::share::replica::{self, MESSAGES_VERSION, Replica, TokenCell};
+use crate::share::{
+    Aad, AccessKey, ChildKeys, ContentKey, EncKey, KeyCard, NotePayload, Sealed, SealedMessage,
+};
+use crate::{
+    EncodedImage, Error, ImageId, Message, MessageId, NoteId, NoteImage, Result, Sender, SharedNote,
+};
 
 /// A database token is renewed this long before it expires, so it can't
 /// run out halfway through a pull.
@@ -54,13 +65,21 @@ const TOKEN_REUSE_MS: i64 = 15 * 60 * 1000;
 const SESSION_FILE: &str = "session.json";
 /// The replica of the share database, in the child folder.
 const REPLICA_FILE: &str = "share.db";
+/// The child's messages not pushed yet, in the child folder.
+const OUTBOX_FILE: &str = "outbox.json";
 
-/// What the child is signed in to, and the notes in it, newest first.
+/// What the child is signed in to, and what's in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SharedNotes {
+pub struct ShareContents {
     pub father_email: String,
     pub relay_url: String,
+    /// Newest first.
     pub notes: Vec<SharedNote>,
+    /// The conversation with Dad, oldest first.
+    pub messages: Vec<Message>,
+    /// The child can write to Dad: his Papa has made the share's message
+    /// tables, and its key is this one.
+    pub can_message: bool,
     /// The share is still sealed under a key this one doesn't open: Dad
     /// made a new key, and his app hasn't synced since. The relay took the
     /// key, so it's the right one; the notes come with his next sync.
@@ -77,13 +96,15 @@ pub struct ChildSession {
 type Reply<T> = oneshot::Sender<Result<T>>;
 
 enum Request {
-    Open(Reply<Option<SharedNotes>>),
+    Open(Reply<Option<ShareContents>>),
     SignIn {
         father_email: String,
         key: KeyCard,
-        reply: Reply<SharedNotes>,
+        reply: Reply<ShareContents>,
     },
-    Pull(Reply<Option<SharedNotes>>),
+    Pull(Reply<Option<ShareContents>>),
+    Send(MessageId, String, Reply<Message>),
+    MarkRead(Reply<usize>),
     NoteImages(NoteId, Reply<Vec<NoteImage>>),
     Image(ImageId, BlobKind, Reply<EncodedImage>),
     SignOut(Reply<()>),
@@ -114,13 +135,13 @@ impl ChildSession {
 
     /// Opens the saved sign-in and reads the notes the last pull brought,
     /// without the network. `None` if nobody signed in here.
-    pub async fn open(&self) -> Result<Option<SharedNotes>> {
+    pub async fn open(&self) -> Result<Option<ShareContents>> {
         self.call(Request::Open).await
     }
 
     /// Signs in with Dad's email and the key he handed over, downloads the
     /// share, and remembers the sign-in. Replaces whatever was here.
-    pub async fn sign_in(&self, father_email: String, key: KeyCard) -> Result<SharedNotes> {
+    pub async fn sign_in(&self, father_email: String, key: KeyCard) -> Result<ShareContents> {
         self.call(|reply| Request::SignIn {
             father_email,
             key,
@@ -129,13 +150,29 @@ impl ChildSession {
         .await
     }
 
-    /// Fetches what changed. `Some`, with all the notes, if anything did.
+    /// Pushes what this app wrote, then fetches what changed. `Some`, with
+    /// everything, if anything did.
     ///
     /// Fails with [`Error::Relay`] and
     /// [`InvalidCredentials`](papa_proto::ErrorCode::InvalidCredentials)
     /// once the key stops working: Dad made a new one, or stopped sharing.
-    pub async fn pull(&self) -> Result<Option<SharedNotes>> {
+    pub async fn pull(&self) -> Result<Option<ShareContents>> {
         self.call(Request::Pull).await
+    }
+
+    /// Writes to Dad, as `id`: the id the UI gave the message when it
+    /// showed it. The message is stored, then pushed; offline, it's
+    /// stored and comes back with `sent: false`, and the next
+    /// [`pull`](Self::pull) sends it. Fails with
+    /// [`Error::MessagesUnavailable`] until `can_message`.
+    pub async fn send(&self, id: MessageId, body: String) -> Result<Message> {
+        self.call(|reply| Request::Send(id, body, reply)).await
+    }
+
+    /// The child read Dad's messages: adds a receipt for each that has
+    /// none, and pushes them if it can. Returns how many.
+    pub async fn mark_read(&self) -> Result<usize> {
+        self.call(Request::MarkRead).await
     }
 
     /// A note's images: thumbnails, and the size of each display copy.
@@ -190,6 +227,8 @@ struct OpenShare {
     content: Option<(i64, ContentKey)>,
     /// Each note's images, from the last read: what the gallery asks for.
     images: HashMap<NoteId, Vec<ImageId>>,
+    /// The child's messages that may not have been pushed yet.
+    outbox: HashSet<MessageId>,
 }
 
 /// The child thread's state. Only that thread touches it.
@@ -233,6 +272,12 @@ impl Worker {
             Request::Pull(reply) => {
                 let _ = reply.send(self.pull().await);
             }
+            Request::Send(id, body, reply) => {
+                let _ = reply.send(self.send(id, body).await);
+            }
+            Request::MarkRead(reply) => {
+                let _ = reply.send(self.mark_read().await);
+            }
             Request::NoteImages(note, reply) => {
                 let _ = reply.send(self.note_images(note).await);
             }
@@ -261,7 +306,11 @@ impl Worker {
         self.dir.join(SESSION_FILE)
     }
 
-    async fn open(&mut self) -> Result<Option<SharedNotes>> {
+    fn outbox_path(&self) -> PathBuf {
+        self.dir.join(OUTBOX_FILE)
+    }
+
+    async fn open(&mut self) -> Result<Option<ShareContents>> {
         if self.open.is_none() {
             let Some(saved) = self.load_session()? else {
                 return Ok(None);
@@ -279,7 +328,7 @@ impl Worker {
                 *token.lock().expect("never poisoned") = fresh.database.token;
                 renew_at = renew_at_for(fresh.database.expires_at, Timestamp::now());
             }
-            let replica = Replica::open_for_reading(&path, &saved.database_url, token.clone())
+            let replica = Replica::open_as_child(&path, &saved.database_url, token.clone())
                 .await
                 .inspect_err(|_| {
                     // Never the cache that's there: only a half-made one.
@@ -287,6 +336,7 @@ impl Worker {
                         let _ = replica::remove_files(&path);
                     }
                 })?;
+            let outbox = load_outbox(&self.outbox_path())?;
             self.open = Some(OpenShare {
                 saved,
                 keys,
@@ -295,13 +345,14 @@ impl Worker {
                 renew_at,
                 content: None,
                 images: HashMap::new(),
+                outbox,
             });
         }
         let open = self.open.as_mut().expect("opened just above");
         read(open).await.map(Some)
     }
 
-    async fn sign_in(&mut self, father_email: String, key: KeyCard) -> Result<SharedNotes> {
+    async fn sign_in(&mut self, father_email: String, key: KeyCard) -> Result<ShareContents> {
         let father_email = father_email.trim().to_owned();
         let keys = ChildKeys::derive(&key.access_key)?;
         let relay = self.relay(&key.relay_url)?;
@@ -312,6 +363,7 @@ impl Worker {
         self.open = None;
         let path = self.replica_path();
         replica::remove_files(&path)?;
+        crate::files::remove_if_exists(&self.outbox_path())?;
         crate::files::create_private_dir(&self.dir)?;
 
         let cell: TokenCell = Arc::new(Mutex::new(token.database.token));
@@ -323,8 +375,7 @@ impl Worker {
             access_key: Secret::new(key.access_key.to_string()),
         };
         let opened = async {
-            let replica =
-                Replica::open_for_reading(&path, &saved.database_url, cell.clone()).await?;
+            let replica = Replica::open_as_child(&path, &saved.database_url, cell.clone()).await?;
             let mut open = OpenShare {
                 saved,
                 keys,
@@ -333,6 +384,7 @@ impl Worker {
                 renew_at: renew_at_for(token.database.expires_at, Timestamp::now()),
                 content: None,
                 images: HashMap::new(),
+                outbox: HashSet::new(),
             };
             let notes = read(&mut open).await?;
             Ok::<_, Error>((open, notes))
@@ -351,9 +403,9 @@ impl Worker {
         Ok(notes)
     }
 
-    async fn pull(&mut self) -> Result<Option<SharedNotes>> {
+    async fn pull(&mut self) -> Result<Option<ShareContents>> {
         self.fresh_token().await?;
-        let pulled = self.pull_once().await;
+        let pulled = self.sync_once().await;
         // A token lasts an hour, and can outlive the key it was given for:
         // Dad may have made a new key since, or stopped sharing. Before
         // calling the share broken, or waiting for a key, ask the relay
@@ -372,17 +424,104 @@ impl Worker {
         self.fresh_token().await?;
         match pulled {
             // The key is good, so maybe the token wasn't: once more.
-            Err(Error::Sync(_)) => self.pull_once().await,
+            Err(Error::Sync(_)) => self.sync_once().await,
             pulled => pulled,
         }
     }
 
-    async fn pull_once(&mut self) -> Result<Option<SharedNotes>> {
+    /// Pushes what's waiting, then pulls.
+    async fn sync_once(&mut self) -> Result<Option<ShareContents>> {
+        let pushed = self.push_pending().await?;
         let open = self.open.as_mut().ok_or(Error::ChildSignedOut)?;
-        if !open.replica.pull().await? {
+        if !open.replica.pull().await? && !pushed {
             return Ok(None);
         }
         read(open).await.map(Some)
+    }
+
+    /// Pushes the messages and receipts written here since the last push,
+    /// if there are any, and empties the outbox. `true` if anything went.
+    async fn push_pending(&mut self) -> Result<bool> {
+        let open = self.open.as_ref().ok_or(Error::ChildSignedOut)?;
+        let unpushed = open.replica.unpushed().await? > 0;
+        if unpushed {
+            self.fresh_token().await?;
+            let open = self.open.as_ref().ok_or(Error::ChildSignedOut)?;
+            open.replica.push().await?;
+        }
+        let outbox_path = self.outbox_path();
+        let open = self.open.as_mut().ok_or(Error::ChildSignedOut)?;
+        // Turso has nothing left to send, so neither has the outbox (an
+        // app that quit right after a push may have left ids in it).
+        let had_outbox = !open.outbox.is_empty();
+        if had_outbox {
+            open.outbox.clear();
+            crate::files::remove_if_exists(&outbox_path)?;
+        }
+        Ok(unpushed || had_outbox)
+    }
+
+    async fn send(&mut self, id: MessageId, body: String) -> Result<Message> {
+        let body = clean_message(&body)?;
+        let outbox_path = self.outbox_path();
+        let open = self.open.as_mut().ok_or(Error::ChildSignedOut)?;
+        if open.replica.schema_version().await? < MESSAGES_VERSION {
+            return Err(Error::MessagesUnavailable);
+        }
+        let (epoch, key) = open.content.as_ref().ok_or(Error::MessagesUnavailable)?;
+        let mut message = Message::draft(id, Sender::Child, body);
+        let sealed = SealedMessage::seal(
+            key,
+            &open.saved.share_id,
+            id,
+            Sender::Child,
+            message.created_at.as_millisecond(),
+            *epoch,
+            &message.body,
+        )?;
+        // The outbox first. A crash between the two leaves an id with no
+        // message, which nothing shows; the other way round, a message
+        // that looks sent and isn't.
+        open.outbox.insert(id);
+        save_outbox(&outbox_path, &open.outbox)?;
+        open.replica.add_message(&sealed).await?;
+        // Offline is fine: the message waits, and the next pull sends it.
+        message.sent = self.push_pending().await.is_ok();
+        Ok(message)
+    }
+
+    async fn mark_read(&mut self) -> Result<usize> {
+        let open = self.open.as_mut().ok_or(Error::ChildSignedOut)?;
+        let Some((epoch, _)) = open.content else {
+            return Ok(0);
+        };
+        if open.replica.schema_version().await? < MESSAGES_VERSION {
+            return Ok(0);
+        }
+        let read: HashSet<MessageId> = open
+            .replica
+            .receipts()
+            .await?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let now = Timestamp::now().as_millisecond();
+        // Only what the child can see: Dad's messages under this key.
+        let receipts: Vec<(MessageId, i64)> = open
+            .replica
+            .sealed_messages(Some(Sender::Father))
+            .await?
+            .into_iter()
+            .filter(|message| message.epoch == epoch && !read.contains(&message.id))
+            .map(|message| (message.id, now))
+            .collect();
+        if receipts.is_empty() {
+            return Ok(0);
+        }
+        open.replica.add_receipts(&receipts).await?;
+        // Offline, the receipts wait for the next pull.
+        let _ = self.push_pending().await;
+        Ok(receipts.len())
     }
 
     /// Makes sure the open share's token is good for a while yet.
@@ -454,6 +593,7 @@ impl Worker {
         // Dropping the replica closes it before its files go.
         self.open = None;
         crate::files::remove_if_exists(&self.session_path())?;
+        crate::files::remove_if_exists(&self.outbox_path())?;
         replica::remove_files(&self.replica_path())
     }
 
@@ -470,15 +610,42 @@ impl Worker {
     }
 }
 
+/// The outbox at `path`: empty if there's no file.
+fn load_outbox(path: &Path) -> Result<HashSet<MessageId>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(reason) => {
+            return Err(Error::ReadFile {
+                path: path.to_owned(),
+                reason,
+            });
+        }
+    };
+    let ids: Vec<String> =
+        serde_json::from_str(&text).map_err(|reason| Error::InvalidSettings {
+            path: path.to_owned(),
+            reason,
+        })?;
+    // An id that doesn't parse can't be any message's: nothing to show.
+    Ok(ids.iter().filter_map(|id| id.parse().ok()).collect())
+}
+
+fn save_outbox(path: &Path, outbox: &HashSet<MessageId>) -> Result<()> {
+    let ids: Vec<String> = outbox.iter().map(MessageId::to_string).collect();
+    let json = serde_json::to_vec(&ids).expect("strings serialize");
+    crate::files::write_atomic(path, &json)
+}
+
 /// When to renew a token, fetched `now`, that expires at `expires_at`.
 fn renew_at_for(expires_at: i64, now: Timestamp) -> i64 {
     let reuse_until = now.as_millisecond() + TOKEN_REUSE_MS;
     (expires_at - TOKEN_MARGIN_MS).min(reuse_until)
 }
 
-/// Reads and decrypts every note in `open`'s replica, and remembers the
-/// content key and each note's images for later requests.
-async fn read(open: &mut OpenShare) -> Result<SharedNotes> {
+/// Reads and decrypts every note and message in `open`'s replica, and
+/// remembers the content key and each note's images for later requests.
+async fn read(open: &mut OpenShare) -> Result<ShareContents> {
     // Until Dad's first sync, the database has no tables: nothing shared.
     let opened = if open.replica.readable().await? {
         let keys = open.replica.share_keys().await?;
@@ -487,10 +654,12 @@ async fn read(open: &mut OpenShare) -> Result<SharedNotes> {
     } else {
         Opened::Nothing
     };
-    let mut contents = SharedNotes {
+    let mut contents = ShareContents {
         father_email: open.saved.father_email.clone(),
         relay_url: open.saved.relay_url.clone(),
         notes: Vec::new(),
+        messages: Vec::new(),
+        can_message: false,
         waiting: false,
     };
     open.content = None;
@@ -507,6 +676,19 @@ async fn read(open: &mut OpenShare) -> Result<SharedNotes> {
                 .iter()
                 .map(|note| (note.id, note.images.clone()))
                 .collect();
+            if open.replica.schema_version().await? >= MESSAGES_VERSION {
+                let rows = open.replica.sealed_messages(None).await?;
+                let receipts = open.replica.receipts().await?;
+                contents.messages = open_messages(
+                    &open.saved.share_id,
+                    epoch,
+                    &content,
+                    rows,
+                    receipts,
+                    &open.outbox,
+                )?;
+                contents.can_message = true;
+            }
             open.content = Some((epoch, content));
             contents.notes = notes;
         }
@@ -514,11 +696,45 @@ async fn read(open: &mut OpenShare) -> Result<SharedNotes> {
     Ok(contents)
 }
 
+/// Decrypts the conversation: the messages sealed under the current
+/// epoch, oldest first. Like notes, older ones wait for Dad's app to seal
+/// them again, and a current one that won't open is an error.
+fn open_messages(
+    share: &str,
+    epoch: i64,
+    content: &ContentKey,
+    rows: Vec<SealedMessage>,
+    receipts: Vec<(MessageId, i64)>,
+    outbox: &HashSet<MessageId>,
+) -> Result<Vec<Message>> {
+    let receipts: HashMap<MessageId, i64> = receipts.into_iter().collect();
+    let mut messages = Vec::with_capacity(rows.len());
+    for row in rows.into_iter().filter(|row| row.epoch == epoch) {
+        let read_at = receipts
+            .get(&row.id)
+            .and_then(|ms| Timestamp::from_millisecond(*ms).ok());
+        messages.push(Message {
+            body: row.open(content, share)?,
+            created_at: Timestamp::from_millisecond(row.created_at).map_err(|_| {
+                Error::Corrupt {
+                    what: "message date",
+                    value: row.created_at.to_string(),
+                }
+            })?,
+            sent: row.sender == Sender::Father || !outbox.contains(&row.id),
+            read_at,
+            ..Message::draft(row.id, row.sender, String::new())
+        });
+    }
+    messages.sort_by_key(|message| (message.created_at, message.id));
+    Ok(messages)
+}
+
 /// What a share's rows open to.
 enum Opened {
     /// No key yet: nothing has been shared.
     Nothing,
-    /// The key is for another access key (see [`SharedNotes::waiting`]).
+    /// The key is for another access key (see [`ShareContents::waiting`]).
     Waiting,
     Notes {
         epoch: i64,

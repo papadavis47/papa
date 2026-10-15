@@ -106,7 +106,11 @@ A child uses the same app. On a computer with no vault, Papa asks what you'd lik
 PAPA_VAULT=/tmp/papa-child/vault.db cargo run
 ```
 
-Choose "Open notes shared with me", type Dad's email and paste the key from his sharing dialog. Papa downloads the share to `child/share.db` next to where the vault would be, decrypts it, and shows the notes read-only. ⌘R checks for new ones (it also does every minute), ⌘P and ⌘⇧P export to PDF, and the notes stay readable offline. If Dad makes a new key, the app says the old one stopped working and asks for the new one.
+Choose "Open notes shared with me", type Dad's email and paste the key from his sharing dialog. Papa downloads the share to `child/share.db` next to where the vault would be, decrypts it, and shows the notes read-only. ⌘R checks for new ones (it also does every 30 seconds), ⌘P and ⌘⇧P export to PDF, and the notes stay readable offline. If Dad makes a new key, the app says the old one stopped working and asks for the new one.
+
+### Messages
+
+Dad and a child he shares with can write to each other. In Dad's app, Messages is at the foot of the sidebar (⌘⇧M, or ⌘K → "Write to Emma"); in the child's, it's next to Notes from Dad. Both apps check for new messages every 30 seconds and send at once. A message written offline says "Sending…" and goes with the next check. Messages are encrypted like notes, and Dad's vault keeps the conversation even if sharing stops.
 
 Some tests start `tursodb` to sync for real. They look for it on the `PATH` (or in `$TURSODB`) and skip when it's missing; CI installs it and sets `PAPA_REQUIRE_TURSODB=1`, so there they can't skip.
 

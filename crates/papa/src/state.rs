@@ -3,6 +3,16 @@
 
 use papa_core::{ChildId, LabelId, NoteFilter, NoteId};
 
+/// What the two panes right of the sidebar show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pane {
+    /// The note list and the open note.
+    #[default]
+    Notes,
+    /// The conversations and the open one.
+    Messages,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     /// The sidebar entry: which notes the list shows.
@@ -62,7 +72,7 @@ impl Selection {
 
 /// The item `delta` places after `current` in `items`, stopping at either
 /// end. With no current item (or one not in `items`), lands on the first.
-fn step<T: Copy + PartialEq>(current: Option<T>, delta: isize, items: &[T]) -> Option<T> {
+pub fn step<T: Copy + PartialEq>(current: Option<T>, delta: isize, items: &[T]) -> Option<T> {
     let last = items.len().checked_sub(1)?;
     let next = match current.and_then(|current| items.iter().position(|item| *item == current)) {
         Some(index) => index.saturating_add_signed(delta).min(last),

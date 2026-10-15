@@ -13,7 +13,7 @@ use common::{EMAIL, World, sample_png};
 use papa_core::images::prepare;
 use papa_core::share::KeyCard;
 use papa_core::share::projection::BlobKind;
-use papa_core::{ChildId, ChildSession, Error, NoteDraft, NoteId, SharedNotes};
+use papa_core::{ChildId, ChildSession, Error, NoteDraft, NoteId, ShareContents};
 use papa_proto::ErrorCode;
 
 impl World {
@@ -29,7 +29,7 @@ impl World {
     }
 
     /// Signs in as the child, with the key as Dad would hand it over.
-    async fn sign_in(&self, child: ChildId) -> (ChildSession, SharedNotes) {
+    async fn sign_in(&self, child: ChildId) -> (ChildSession, ShareContents) {
         let session = ChildSession::start(self.child_dir()).unwrap();
         let card = self.key_card(child).await.parse().unwrap();
         let notes = session.sign_in(EMAIL.into(), card).await.unwrap();
@@ -57,7 +57,7 @@ impl World {
     }
 }
 
-fn titles(notes: &SharedNotes) -> Vec<&str> {
+fn titles(notes: &ShareContents) -> Vec<&str> {
     notes.notes.iter().map(|note| note.title.as_str()).collect()
 }
 

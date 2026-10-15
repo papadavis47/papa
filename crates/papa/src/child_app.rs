@@ -1,13 +1,15 @@
-//! Child mode: the notes Dad shared, read-only.
+//! Child mode: the notes Dad shared, read-only, and messages with him.
 //!
-//! The same window as the father's, with less in it: the note list, the
-//! note, and a status bar. No sidebar (there's one child, and labels are
-//! Dad's), no editor, no vault. What it holds is a [`ChildSession`], the
-//! handle to `papa-core`'s child thread, and the notes decrypted from it.
+//! The same window as the father's, with less in it: a sidebar with Dad's
+//! notes and the messages, the note list and the note (or the
+//! conversation), and a status bar. No editor, no labels (they're Dad's),
+//! no vault. What it holds is a [`ChildSession`], the handle to
+//! `papa-core`'s child thread, and what's decrypted from it.
 //!
 //! Pulls happen when the app opens, every [`PULL_EVERY`], and on ⌘R. In
 //! between, and offline, the list shows what the last pull brought.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -26,24 +28,29 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use papa_core::model::SearchTerms;
 use papa_core::share::projection::BlobKind;
-use papa_core::{ChildSession, Error, NoteFilter, NoteId, NoteSummary, SharedNote, SharedNotes};
+use papa_core::{
+    ChildSession, Error, Message, MessageId, NoteFilter, NoteId, NoteSummary, Sender,
+    ShareContents, SharedNote,
+};
 use papa_pdf::Document;
 use papa_proto::ErrorCode;
 
 use crate::app::export::save_pdf;
 use crate::app::{
     APP_CONTEXT, ExportNote, ExportNotes, FocusEditor, FocusNoteList, FocusSearch,
-    NOTE_LIST_CONTEXT, SelectNextNote, SelectPreviousNote, SignOut, SyncNow, pane_context,
+    NOTE_LIST_CONTEXT, OpenMessages, SelectNextNote, SelectPreviousNote, SignOut, SyncNow,
+    pane_context,
 };
 use crate::export::{self, Scope};
 use crate::settings::AppSettings;
-use crate::state::Selection;
+use crate::state::{Pane, Selection};
 use crate::ui::{
-    AppTitleBar, EmptyNotes, NoteList, NoteListEvent, NoteReader, dates, dialogs, sentence,
+    AppTitleBar, ChildSidebar, Conversation, ConversationEvent, EmptyNotes, NoteList,
+    NoteListEvent, NoteReader, dates, dialogs, sentence,
 };
 
-/// How often the app checks for new notes while it's open.
-pub const PULL_EVERY: Duration = Duration::from_secs(60);
+/// How often the app checks for new notes and messages while it's open.
+pub const PULL_EVERY: Duration = Duration::from_secs(30);
 
 /// What a child's book is called: its cover and its file.
 const BOOK_TITLE: &str = "Notes from Dad";
@@ -79,8 +86,16 @@ pub struct ChildApp {
     /// The ones the search matches, as the list shows them.
     list: Rc<Vec<NoteSummary>>,
     /// Dad's new key hasn't reached the share yet (see
-    /// [`SharedNotes::waiting`]).
+    /// [`ShareContents::waiting`]).
     waiting: bool,
+    /// The conversation with Dad, as the last read left it.
+    messages: Vec<Message>,
+    /// Whether the child can write to Dad (see
+    /// [`ShareContents::can_message`]).
+    can_message: bool,
+    /// Notes or messages.
+    pane: Pane,
+    conversation: Entity<Conversation>,
     selection: Selection,
     search: Entity<InputState>,
     note_scroll: UniformListScrollHandle,
@@ -104,7 +119,7 @@ impl ChildApp {
     /// checks for new notes straight away.
     pub fn new(
         session: ChildSession,
-        contents: SharedNotes,
+        contents: ShareContents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -114,7 +129,13 @@ impl ChildApp {
                 .clean_on_escape()
         });
         let reader = cx.new(|cx| NoteReader::new(session.clone(), window, cx));
+        let conversation = cx.new(|cx| Conversation::new(Sender::Child, window, cx));
         let subscriptions = vec![
+            cx.subscribe_in(&conversation, window, Self::on_conversation_event),
+            // Coming back to the window is when the conversation is read.
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.mark_read_if_seen(window, cx)
+            }),
             cx.subscribe_in(
                 &search,
                 window,
@@ -147,6 +168,10 @@ impl ChildApp {
             notes: Rc::default(),
             list: Rc::default(),
             waiting: false,
+            messages: Vec::new(),
+            can_message: false,
+            pane: Pane::default(),
+            conversation,
             selection: Selection::default(),
             search,
             note_scroll: UniformListScrollHandle::new(),
@@ -164,11 +189,160 @@ impl ChildApp {
         app
     }
 
-    /// The share's notes changed: keep the open note if it's still there.
-    fn set_contents(&mut self, contents: SharedNotes, window: &mut Window, cx: &mut Context<Self>) {
+    /// The share changed: keep the open note if it's still there, and
+    /// say so if Dad wrote while the child was looking elsewhere.
+    fn set_contents(
+        &mut self,
+        contents: ShareContents,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let known: HashSet<MessageId> = self.messages.iter().map(|m| m.id).collect();
+        let first_read = self.messages.is_empty() && self.notes.is_empty();
+        let news = contents
+            .messages
+            .iter()
+            .filter(|m| m.sender == Sender::Father && m.read_at.is_none())
+            .any(|m| !known.contains(&m.id));
         self.notes = Rc::new(contents.notes);
         self.waiting = contents.waiting;
+        self.messages = contents.messages;
+        self.can_message = contents.can_message;
         self.refresh_list(window, cx);
+        self.show_conversation(window, cx);
+        if news && !first_read && !self.conversation_seen(window) {
+            self.announce_message(window, cx);
+        }
+    }
+
+    // --- Messages ---
+
+    /// Dad's messages the child hasn't read.
+    fn unread(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|m| m.sender == Sender::Father && m.read_at.is_none())
+            .count()
+    }
+
+    /// Whether the child can see the conversation: it's open, and the
+    /// window is in front.
+    fn conversation_seen(&self, window: &Window) -> bool {
+        self.pane == Pane::Messages && window.is_window_active()
+    }
+
+    fn show_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let blocked: Option<SharedString> = if self.status == PullStatus::KeyRefused {
+            Some("Your key no longer works. Sign in again with the new one from Dad.".into())
+        } else if self.waiting {
+            Some("Waiting for Dad's new key: messages open once his Papa syncs.".into())
+        } else if !self.can_message {
+            Some("Messages open once Dad's Papa has synced with yours.".into())
+        } else {
+            None
+        };
+        let messages = self.messages.clone();
+        self.conversation.update(cx, |conversation, cx| {
+            conversation.show("dad", "Dad", messages, blocked, window, cx)
+        });
+        self.mark_read_if_seen(window, cx);
+    }
+
+    fn select_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        self.pane = pane;
+        match pane {
+            Pane::Messages => {
+                self.conversation
+                    .update(cx, |conversation, cx| conversation.focus(window, cx));
+                self.mark_read_if_seen(window, cx);
+            }
+            Pane::Notes => self.note_list_focus.focus(window, cx),
+        }
+        cx.notify();
+    }
+
+    fn open_messages(&mut self, _: &OpenMessages, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_pane(Pane::Messages, window, cx);
+    }
+
+    /// Marks Dad's messages read if the child is looking at them. The
+    /// window shows them read at once; the receipts follow in the
+    /// background, and with the next pull if they can't go now.
+    fn mark_read_if_seen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.unread() == 0 || !self.conversation_seen(window) {
+            return;
+        }
+        let now = jiff::Timestamp::now();
+        for message in &mut self.messages {
+            if message.sender == Sender::Father && message.read_at.is_none() {
+                message.read_at = Some(now);
+            }
+        }
+        let session = self.session.clone();
+        cx.spawn_in(window, async move |_, _| {
+            // Failing here changes nothing on screen: the receipts are
+            // written again from the next read.
+            let _ = session.mark_read().await;
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn on_conversation_event(
+        &mut self,
+        conversation: &Entity<Conversation>,
+        event: &ConversationEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ConversationEvent::Send(draft) = event;
+        let (id, body) = (draft.id, draft.body.clone());
+        let session = self.session.clone();
+        let conversation = conversation.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = session.send(id, body).await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(message) => {
+                    match this.messages.iter_mut().find(|m| m.id == message.id) {
+                        Some(known) => *known = message.clone(),
+                        None => this.messages.push(message.clone()),
+                    }
+                    conversation.update(cx, |conversation, cx| conversation.sent(message, cx));
+                    cx.notify();
+                }
+                Err(err) => {
+                    conversation
+                        .update(cx, |conversation, cx| conversation.not_sent(id, window, cx));
+                    window.push_notification(
+                        Notification::error(sentence(err)).title("Couldn't send the message"),
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn announce_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        window.push_notification(
+            Notification::info("Dad wrote to you.")
+                .title("New message")
+                .action(move |_, _, cx| {
+                    let this = this.clone();
+                    gpui_kit::component::button::Button::new("open-messages")
+                        .label("Read")
+                        .on_click(cx.listener(move |notification, _, window, cx| {
+                            notification.dismiss(window, cx);
+                            this.update(cx, |this, cx| {
+                                this.select_pane(Pane::Messages, window, cx)
+                            })
+                            .ok();
+                        }))
+                }),
+            cx,
+        );
     }
 
     /// Filters the notes by the search, and keeps the selection valid.
@@ -216,7 +390,7 @@ impl ChildApp {
 
     fn pulled(
         &mut self,
-        result: papa_core::Result<Option<SharedNotes>>,
+        result: papa_core::Result<Option<ShareContents>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -240,6 +414,7 @@ impl ChildApp {
     /// the child signs in again; the notification offers to do that.
     fn key_refused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.status = PullStatus::KeyRefused;
+        self.show_conversation(window, cx);
         let this = cx.entity().downgrade();
         window.push_notification(
             Notification::warning(
@@ -577,6 +752,7 @@ impl Render for ChildApp {
             .on_action(cx.listener(Self::export_notes))
             .on_action(cx.listener(Self::sync_now))
             .on_action(cx.listener(Self::sign_out))
+            .on_action(cx.listener(Self::open_messages))
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -586,18 +762,38 @@ impl Render for ChildApp {
                     h_resizable("child-panes")
                         .child(
                             resizable_panel()
-                                .size(px(320.))
-                                .size_range(px(220.)..px(480.))
+                                .size(px(200.))
+                                .size_range(px(160.)..px(280.))
                                 .flex_none()
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .key_context(pane_context(NOTE_LIST_CONTEXT, vim))
-                                        .track_focus(&self.note_list_focus)
-                                        .child(note_list),
-                                ),
+                                .child(ChildSidebar::new(
+                                    self.pane,
+                                    self.notes.len(),
+                                    self.unread(),
+                                    cx.listener(|this, pane: &Pane, window, cx| {
+                                        this.select_pane(*pane, window, cx)
+                                    }),
+                                )),
                         )
-                        .child(resizable_panel().child(self.reader.clone())),
+                        .when(self.pane == Pane::Notes, |panes| {
+                            panes
+                                .child(
+                                    resizable_panel()
+                                        .size(px(320.))
+                                        .size_range(px(220.)..px(480.))
+                                        .flex_none()
+                                        .child(
+                                            div()
+                                                .size_full()
+                                                .key_context(pane_context(NOTE_LIST_CONTEXT, vim))
+                                                .track_focus(&self.note_list_focus)
+                                                .child(note_list),
+                                        ),
+                                )
+                                .child(resizable_panel().child(self.reader.clone()))
+                        })
+                        .when(self.pane == Pane::Messages, |panes| {
+                            panes.child(resizable_panel().child(self.conversation.clone()))
+                        }),
                 ),
             )
             .child(

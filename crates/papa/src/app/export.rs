@@ -199,12 +199,16 @@ fn exported(
             }
             Notification::success(message)
                 .title(sentence(format!("Exported {what}")))
-                .action(move |_, _, _| {
+                .action(move |_, _, cx| {
                     let path = path.clone();
                     Button::new("show-pdf")
                         .primary()
                         .label("Show in folder")
-                        .on_click(move |_, _, cx| cx.reveal_path(&path))
+                        // Its job is done once the file manager opens.
+                        .on_click(cx.listener(move |notification, _, window, cx| {
+                            cx.reveal_path(&path);
+                            notification.dismiss(window, cx);
+                        }))
                 })
         }
         Err(err) => Notification::error(sentence(format!("{err:#}")))

@@ -1,4 +1,5 @@
-//! The only module that writes SQL. It runs on the database thread; see
+//! The only module that writes SQL to the vault, with `shares.rs` for
+//! sharing's tables. It runs on the database thread; see
 //! [`Store`](super::Store) for how requests get here.
 
 use std::collections::HashMap;
@@ -36,7 +37,7 @@ impl Location {
 }
 
 pub(super) struct Db {
-    conn: Connection,
+    pub(super) conn: Connection,
     /// Kept alongside the connection so the database outlives it.
     _database: Database,
     location: Location,
@@ -112,6 +113,9 @@ impl Db {
             "note_label",
             "image",
             "image_data",
+            "account",
+            "share",
+            "note_share",
         ] {
             let mut rows = self
                 .conn
@@ -174,6 +178,19 @@ impl Db {
     }
 
     pub(super) async fn delete_child(&self, id: ChildId) -> Result<()> {
+        // The foreign key would refuse too, but only with a generic error.
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT child.name FROM share JOIN child ON child.id = share.child_id \
+                 WHERE share.child_id = ?1",
+                [id.to_string()],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            return Err(Error::ChildIsShared(row.get(0)?));
+        }
+        drop(rows);
         let changed = self
             .conn
             .execute("DELETE FROM child WHERE id = ?1", [id.to_string()])
@@ -341,6 +358,7 @@ impl Db {
             body: row.get(1)?,
             children: self.linked_to(&CHILD_LINKS, id).await?,
             labels: self.linked_to(&LABEL_LINKS, id).await?,
+            shared_with: self.linked_to(&SHARE_LINKS, id).await?,
             created_at: timestamp(&row, 2)?,
             updated_at: timestamp(&row, 3)?,
         })
@@ -389,13 +407,62 @@ impl Db {
         self.note(id).await
     }
 
-    /// Replaces the children a note is about.
+    /// Replaces the children a note is about. A child it's no longer about
+    /// stops seeing it, if it was shared with them.
     pub(super) async fn set_note_children(
         &mut self,
         id: NoteId,
         children: &[ChildId],
     ) -> Result<Note> {
         self.relink(id, &CHILD_LINKS, children).await
+    }
+
+    /// Shares a note with a child, or stops sharing it. The note must be
+    /// about the child, and sharing with the child must be on.
+    pub(super) async fn set_note_shared(
+        &mut self,
+        id: NoteId,
+        child: ChildId,
+        shared: bool,
+    ) -> Result<Note> {
+        if shared {
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT 1 FROM note_child \
+                     JOIN share ON share.child_id = note_child.child_id \
+                     JOIN note ON note.id = note_child.note_id AND note.deleted_at IS NULL \
+                     WHERE note_child.note_id = ?1 AND note_child.child_id = ?2",
+                    (id.to_string(), child.to_string()),
+                )
+                .await?;
+            let allowed = rows.next().await?.is_some();
+            drop(rows);
+            if !allowed {
+                // Say "not found" for a note that's gone, as elsewhere.
+                self.note(id).await?;
+                return Err(Error::CantShareNote);
+            }
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO note_share (note_id, child_id, shared_at) \
+                     VALUES (?1, ?2, ?3)",
+                    (
+                        id.to_string(),
+                        child.to_string(),
+                        Timestamp::now().as_millisecond(),
+                    ),
+                )
+                .await?;
+        } else {
+            self.conn
+                .execute(
+                    "DELETE FROM note_share WHERE note_id = ?1 AND child_id = ?2",
+                    (id.to_string(), child.to_string()),
+                )
+                .await?;
+        }
+        self.note(id).await
     }
 
     /// Replaces a note's labels.
@@ -418,6 +485,11 @@ impl Db {
         found(changed, "note")?;
         set_links::<ChildId>(&tx, &CHILD_LINKS, id, &[]).await?;
         set_links::<LabelId>(&tx, &LABEL_LINKS, id, &[]).await?;
+        tx.execute(
+            "DELETE FROM note_share WHERE note_id = ?1",
+            [id.to_string()],
+        )
+        .await?;
         // The tombstone stays, so the images' `ON DELETE CASCADE` doesn't
         // fire: delete them here. Their bytes cascade from the images.
         tx.execute("DELETE FROM image WHERE note_id = ?1", [id.to_string()])
@@ -570,6 +642,15 @@ impl Db {
             .await?;
         found(changed, "note")?;
         set_links(&tx, links, id, ids).await?;
+        if links.table == CHILD_LINKS.table {
+            // Shared with a child means about that child too.
+            tx.execute(
+                "DELETE FROM note_share WHERE note_id = ?1 AND child_id NOT IN \
+                 (SELECT child_id FROM note_child WHERE note_id = ?1)",
+                [id.to_string()],
+            )
+            .await?;
+        }
         tx.commit().await?;
         self.note(id).await
     }
@@ -655,6 +736,16 @@ const CHILD_LINKS: Links = Links {
     what: "child id",
 };
 
+/// Which children can see a note. Read only through `linked`; written by
+/// `set_note_shared`.
+const SHARE_LINKS: Links = Links {
+    table: "note_share",
+    column: "child_id",
+    other: "child",
+    order: "child.sort_order, child.id",
+    what: "child id",
+};
+
 const LABEL_LINKS: Links = Links {
     table: "note_label",
     column: "label_id",
@@ -729,7 +820,7 @@ fn image_format(row: &Row, idx: usize) -> Result<ImageFormat> {
 }
 
 /// Reads an image's MIME type from column `idx` and its bytes from the next.
-fn encoded_image(row: &Row, idx: usize) -> Result<EncodedImage> {
+pub(super) fn encoded_image(row: &Row, idx: usize) -> Result<EncodedImage> {
     let format = image_format(row, idx)?;
     // turso has no `FromValue` for `Vec<u8>`; take the `Value` apart instead.
     match row.get_value(idx + 1)? {
@@ -742,14 +833,14 @@ fn encoded_image(row: &Row, idx: usize) -> Result<EncodedImage> {
 }
 
 /// Reads column `idx` as text and parses it into an id type.
-fn parse_id<T: FromStr>(row: &Row, idx: usize, what: &'static str) -> Result<T> {
+pub(super) fn parse_id<T: FromStr>(row: &Row, idx: usize, what: &'static str) -> Result<T> {
     let text: String = row.get(idx)?;
     text.parse()
         .map_err(|_| Error::Corrupt { what, value: text })
 }
 
 /// Reads column `idx` as Unix milliseconds.
-fn timestamp(row: &Row, idx: usize) -> Result<Timestamp> {
+pub(super) fn timestamp(row: &Row, idx: usize) -> Result<Timestamp> {
     let millis: i64 = row.get(idx)?;
     Timestamp::from_millisecond(millis).map_err(|_| Error::Corrupt {
         what: "timestamp",
@@ -758,7 +849,7 @@ fn timestamp(row: &Row, idx: usize) -> Result<Timestamp> {
 }
 
 /// Turns "the UPDATE/DELETE matched no rows" into [`Error::NotFound`].
-fn found(changed_rows: u64, what: &'static str) -> Result<()> {
+pub(super) fn found(changed_rows: u64, what: &'static str) -> Result<()> {
     if changed_rows == 0 {
         return Err(Error::NotFound(what));
     }

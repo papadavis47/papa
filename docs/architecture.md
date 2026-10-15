@@ -45,13 +45,15 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 │ CommandPalette ── (Entity) ⌘K over everything; key context         │
 │               "CommandPalette"; runs actions, emits Run(command)   │
 │ dialogs    ── add/edit child, add/rename label, confirm delete,    │
-│               set/change/remove password, restore a backup         │
+│               set/change/remove password, restore a backup,        │
+│               sign in / create account, sharing with a child       │
 └────────────────────────────────────────────────────────────────────┘
 
 ┌─ SettingsPanel (Entity, its own window) ───────────────────────────┐
-│ gpui-kit Settings: Appearance · Editor · Privacy · Data, search    │
+│ gpui-kit Settings: Appearance · Editor · Privacy · Sharing · Data  │
 │ fields read and write the AppSettings global; vault buttons send   │
-│ actions to the main window and read the VaultStatus global         │
+│ actions to the main window and read the VaultStatus and            │
+│ AccountStatus globals                                              │
 └────────────────────────────────────────────────────────────────────┘
 
  Globals: AppSettings ──observed by──▶ theme.rs ──rebuilds──▶ Theme
@@ -155,6 +157,7 @@ papa-relay (server, axum)    ──depends on──▶ papa-proto
 | Vault before the last restore | `vault-before-restore.db` (and `.key`) next to the vault | `PAPA_VAULT` |
 | Settings | `~/.config/papa/settings.json` / `~/Library/Application Support/papa/settings.json` | `PAPA_CONFIG_DIR` (a folder) |
 | Your themes | `themes/` next to `settings.json` | `PAPA_CONFIG_DIR` |
+| Share replicas (ciphertext only) | `shares/<child id>.db` next to the vault | `PAPA_VAULT` |
 
 ## Local storage
 
@@ -245,21 +248,56 @@ PAPA_RELAY_LOCAL_SYNC_DIR=dev-sync cargo run -p papa-relay   # listens on 127.0.
 cargo run -p papa-relay -- admin invite create "Me"           # prints an invite code
 ```
 
-## Data flow (planned)
+## Sharing
+
+The father's side is built (Phase 11, [ADR 0015](adr/0015-sharing-keys-and-idempotent-projection.md)); the child's side and messages come in Phases 12 and 13.
+
+```diagram
+ UI thread ──▶ Sharing (papa-sharing thread, tokio with IO)
+                 │ 1. relay: father token for the share (renewed before it expires)
+                 │ 2. replica.manifest(): ids, versions, epochs ── shares/<child>.db
+                 │ 3. store.share_changes(manifest) ──▶ papa-store thread:
+                 │       shared notes and images that differ, sealed with the content key
+                 │ 4. replica.apply(changes) in one transaction
+                 │ 5. replica.push() ──turso sync──▶ share database (local tursodb or Turso Cloud)
+                 └ repeat 2–5 while images remain (≈16 MB per batch)
+```
+
+- **Keys** (`papa-core::share`): the access key `PAPA-…` (130 random bits and a checksum) → Argon2id → HKDF → `auth_key` for the relay and `enc_key` for the device. A random content key per share and epoch is wrapped under `enc_key` in the share's `share_key` row; notes and images are sealed with it (XChaCha20-Poly1305), each bound to its share, row and epoch through the associated data.
+- **The projection is idempotent:** it compares the vault with what the replica holds and sends only the difference, so a failed sync is fixed by the next one. It pushes even when nothing changed, because a failed push leaves the replica ahead of the cloud.
+- **A new key** is stored in the vault first (marked stale until the relay has it), then sent to the relay, then everything is resealed under the next epoch at the next sync. **Stopping** deletes the cloud database, then the replica and the vault's record.
+- **In the app** (`app/sharing.rs`): the sign-in dialog (`AccountForm`), a child's sharing dialog (`ShareDialog`: start, copy the key, new key, stop), "{child} can read it" in a note's + popover and in ⌘K, a cloud next to shared children in the sidebar, and the last sync in the status bar. A note change schedules a sync 3 s later, debounced like autosave; opening the vault syncs once. `PapaApp` publishes an `AccountStatus` global for the Settings window's Sharing page.
+- **TLS:** Turso's sync and the relay client both use rustls, and the workspace builds two crypto providers into it, so `papa-core` installs `aws-lc-rs` as the process default before any connection.
+
+| Vault table (v4) | Columns |
+|---|---|
+| `account` | `relay_url`, `email`, `session_token`, `expires_at`; one row |
+| `share` | `child_id`, `share_id`, `relay_url`, `database_url`, `access_key`, `content_key`, `wrapped_nonce`, `wrapped_key`, `key_epoch`, `auth_key_stale`, `created_at`, `last_synced_at` |
+| `note_share` | `note_id`, `child_id` (cascades from the share), `shared_at` |
+
+| Share database table | Columns (only ids, versions, epochs and sizes are readable) |
+|---|---|
+| `share_schema` | `version` |
+| `share_key` | `epoch`, `nonce`, `wrapped_key` |
+| `shared_note` | `id`, `updated_at`, `key_epoch`, `nonce`, `ciphertext` (title, body, dates, image ids) |
+| `shared_blob` | `id`, `kind` (`thumb` / `display`), `note_id`, `key_epoch`, `nonce`, `ciphertext` |
+
+## Data flow
 
 1. The father's vault is a local Turso database. It is the source of truth and works offline.
-2. When a note is shared with a child, it is encrypted on the father's machine. It is then written to a local replica of that child's share database and pushed to Turso Cloud.
-3. The child's app signs in through the relay (father's email + access key). It receives a read-only token scoped to its own database, pulls, and decrypts locally.
-4. Messages are append-only encrypted rows in the same share database. Both sides push and pull them.
+2. When a note is shared with a child, it is encrypted on the father's machine. It is then written to a local replica of that child's share database and pushed to the cloud. *(Phase 11.)*
+3. The child's app signs in through the relay (father's email + access key). It receives a read-only token scoped to its own database, pulls, and decrypts locally. *(Phase 12.)*
+4. Messages are append-only encrypted rows in the same share database. Both sides push and pull them. *(Phase 13.)*
 
 ## Threading
 
 - **UI thread:** GPUI's executors. Long work is awaited in GPUI tasks, never run inline.
 - **GPUI's background thread pool:** CPU-heavy work handed off with `cx.background_spawn`: preparing images, laying out and writing PDFs, and GPUI's own image decoding. Saving `settings.json` runs there too.
-- **`papa-store` thread:** owns the database connection and runs a single-threaded tokio runtime (tokio is also what `turso`'s sync needs later). It exits when the last `Store` handle is dropped.
+- **`papa-store` thread:** owns the database connection and runs a single-threaded tokio runtime. It exits when the last `Store` handle is dropped.
+- **`papa-sharing` thread:** a single-threaded tokio runtime with IO, for the relay client and Turso's sync; it owns the share replicas. Each open replica adds Turso's own `turso-sync-io` thread. It stops when the vault closes and its `Sharing` handle is dropped.
 
 ## Security model
 
 - Optional encryption at rest for the local vault (Turso, AEGIS-256), with its key wrapped under the father's password (Argon2id + XChaCha20-Poly1305). Locking closes the vault and drops its key. Done in Phase 9; the rest is planned.
-- End-to-end encryption for everything in the cloud (XChaCha20-Poly1305). The relay and Turso only see ciphertext, ids and timestamps.
+- End-to-end encryption for everything in the cloud (XChaCha20-Poly1305, Phase 11). The relay and Turso only see ciphertext, ids, versions and timestamps. Keys for the cloud live in the vault, which is encrypted at rest when it has a password.
 - Tokens are short-lived (one hour) and scoped to a single database. No admin or Platform credentials ship in the app. The relay stores only hashes of passwords, session tokens, invite codes and child keys (Phase 10).

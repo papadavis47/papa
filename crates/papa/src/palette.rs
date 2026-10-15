@@ -24,6 +24,13 @@ pub enum PaletteCommand {
     ToggleChild(ChildId),
     /// Add this label to the open note, or remove it.
     ToggleLabel(LabelId),
+    /// Let this child read the open note, or stop.
+    ToggleShared(ChildId),
+    /// Open this child's sharing dialog.
+    ShareChild(ChildId),
+    SignIn,
+    SignOut,
+    SyncNow,
     /// Turn the Vim mode setting on or off.
     ToggleVimMode,
     /// Set a password, or change it.
@@ -107,6 +114,8 @@ pub struct PaletteGroup {
 pub struct OpenNote<'a> {
     pub children: &'a [ChildId],
     pub labels: &'a [LabelId],
+    /// The children who can read it.
+    pub shared_with: &'a [ChildId],
 }
 
 /// The app's state the palette is built from.
@@ -127,6 +136,10 @@ pub struct PaletteData<'a> {
     /// What exporting the list makes ("Emma’s book", "3 notes"), or `None`
     /// when the list is empty.
     pub list_export: Option<&'a str>,
+    /// Signed in to a Papa account.
+    pub signed_in: bool,
+    /// The children whose sharing is on.
+    pub shared_children: &'a [ChildId],
 }
 
 /// The palette's groups, top to bottom: commands first, the long list of
@@ -136,6 +149,7 @@ pub fn groups(data: &PaletteData) -> Vec<PaletteGroup> {
     if let Some(note) = data.open_note {
         groups.push(assign(data, note));
     }
+    groups.push(sharing(data));
     groups.push(notes(data));
     groups.retain(|group| !group.items.is_empty());
     groups
@@ -275,9 +289,55 @@ fn assign(data: &PaletteData, note: OpenNote) -> PaletteGroup {
         .keywords(["assign", "unassign", "label", "tag"])
         .checked(note.labels.contains(&label.id))
     });
+    // Only children it's about, whose sharing is on, can be given it.
+    let shared = data
+        .children
+        .iter()
+        .filter(|child| note.children.contains(&child.id))
+        .filter(|child| data.shared_children.contains(&child.id))
+        .map(|child| {
+            PaletteItem::new(
+                format!("{} can read it", child.name),
+                PaletteCommand::ToggleShared(child.id),
+            )
+            .keywords(["share", "unshare", "child", "read"])
+            .checked(note.shared_with.contains(&child.id))
+        });
     PaletteGroup {
         heading: "This note",
-        items: children.chain(labels).collect(),
+        items: children.chain(shared).chain(labels).collect(),
+    }
+}
+
+fn sharing(data: &PaletteData) -> PaletteGroup {
+    let open = data.vault_open;
+    let children = data.children.iter().map(|child| {
+        PaletteItem::new(
+            format!("Sharing with {}…", child.name),
+            PaletteCommand::ShareChild(child.id),
+        )
+        .keywords(["share", "access key", "child", "cloud"])
+        .checked(data.shared_children.contains(&child.id))
+        .enabled(open)
+    });
+    let account = if data.signed_in {
+        PaletteItem::new("Sign out of Papa", PaletteCommand::SignOut)
+            .keywords(["account", "log out", "server"])
+    } else {
+        PaletteItem::new("Sign in to Papa…", PaletteCommand::SignIn)
+            .keywords(["account", "log in", "server", "share"])
+    };
+    let sync = PaletteItem::new("Sync shared notes now", PaletteCommand::SyncNow)
+        .keywords(["share", "upload", "cloud"])
+        .enabled(open && data.signed_in && !data.shared_children.is_empty());
+    let items = if open {
+        children.chain([account.enabled(open), sync]).collect()
+    } else {
+        Vec::new()
+    };
+    PaletteGroup {
+        heading: "Sharing",
+        items,
     }
 }
 
@@ -354,6 +414,8 @@ mod tests {
             vim_mode: false,
             encrypted: false,
             list_export: Some("2 notes"),
+            signed_in: true,
+            shared_children: &[],
         }
     }
 
@@ -373,7 +435,7 @@ mod tests {
     fn commands_come_first_and_notes_last() {
         let notes = [note("First bike ride", "")];
         let groups = groups(&data(&[], &[], &notes));
-        assert_eq!(headings(&groups), ["Actions", "Go to", "Notes"]);
+        assert_eq!(headings(&groups), ["Actions", "Go to", "Sharing", "Notes"]);
     }
 
     #[test]
@@ -385,8 +447,12 @@ mod tests {
         data.open_note = Some(OpenNote {
             children: &[],
             labels: &[],
+            shared_with: &[],
         });
-        assert_eq!(headings(&groups(&data)), ["Actions", "Go to", "This note"]);
+        assert_eq!(
+            headings(&groups(&data)),
+            ["Actions", "Go to", "This note", "Sharing"]
+        );
     }
 
     #[test]
@@ -411,6 +477,7 @@ mod tests {
         data.open_note = Some(OpenNote {
             children: &[],
             labels: &[],
+            shared_with: &[],
         });
         assert!(find(&groups(&data), PaletteCommand::DeleteNote).enabled);
     }
@@ -444,6 +511,7 @@ mod tests {
         data.open_note = Some(OpenNote {
             children: &assigned,
             labels: &labelled,
+            shared_with: &[],
         });
         let groups = groups(&data);
 
@@ -455,6 +523,53 @@ mod tests {
         let school = find(&groups, PaletteCommand::ToggleLabel(labels[1].id));
         assert_eq!(school.label, "Labelled #school");
         assert!(school.checked);
+    }
+
+    #[test]
+    fn a_note_can_be_shared_only_with_shared_children_it_is_about() {
+        let children = [child("Emma"), child("Leo"), child("Ada")];
+        let mut data = data(&children, &[], &[]);
+        // Emma and Leo's sharing is on; the note is about Emma and Ada,
+        // and Emma can read it.
+        let shared_children = [children[0].id, children[1].id];
+        data.shared_children = &shared_children;
+        let about = [children[0].id, children[2].id];
+        let shared_with = [children[0].id];
+        data.open_note = Some(OpenNote {
+            children: &about,
+            labels: &[],
+            shared_with: &shared_with,
+        });
+        let groups = groups(&data);
+
+        let shareable: Vec<(&str, bool)> = groups
+            .iter()
+            .flat_map(|group| &group.items)
+            .filter(|item| matches!(item.command, PaletteCommand::ToggleShared(_)))
+            .map(|item| (item.label.as_str(), item.checked))
+            .collect();
+        assert_eq!(shareable, [("Emma can read it", true)]);
+
+        let leo = find(&groups, PaletteCommand::ShareChild(children[1].id));
+        assert_eq!(leo.label, "Sharing with Leo…");
+        assert!(leo.checked, "Leo's sharing is on");
+        assert!(!find(&groups, PaletteCommand::ShareChild(children[2].id)).checked);
+        assert!(find(&groups, PaletteCommand::SyncNow).enabled);
+    }
+
+    #[test]
+    fn signing_in_or_out_follows_the_account() {
+        let mut data = data(&[], &[], &[]);
+        assert!(
+            !find(&groups(&data), PaletteCommand::SyncNow).enabled,
+            "nothing shared"
+        );
+        find(&groups(&data), PaletteCommand::SignOut);
+
+        data.signed_in = false;
+        let groups = groups(&data);
+        find(&groups, PaletteCommand::SignIn);
+        assert!(!find(&groups, PaletteCommand::SyncNow).enabled);
     }
 
     #[test]

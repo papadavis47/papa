@@ -11,9 +11,11 @@ mod export;
 mod lock;
 mod notes;
 mod palette;
+mod sharing;
 mod sidebar;
 
 pub use lock::VaultStatus;
+pub use sharing::AccountStatus;
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -35,7 +37,9 @@ use gpui_kit::{
     SharedString, Styled as _, Subscription, Task, UniformListScrollHandle, Window, div, px,
 };
 use papa_core::lock::{Password, VaultKind};
-use papa_core::{Child, Label, NoteFilter, NoteSummary, Store, paths};
+use papa_core::{
+    Account, Child, ChildShare, Label, NoteFilter, NoteSummary, Sharing, Store, paths,
+};
 
 use crate::settings::AppSettings;
 use crate::state::Selection;
@@ -97,6 +101,14 @@ gpui_kit::actions!(
         ExportBackup,
         /// Replace the vault with a backup.
         RestoreBackup,
+        /// Sign in to a Papa account, to share notes with children.
+        SignIn,
+        /// Create a Papa account with an invite code.
+        CreateAccount,
+        /// Sign out of the Papa account.
+        SignOut,
+        /// Sync shared notes now, rather than after the next change.
+        SyncNow,
     ]
 );
 
@@ -244,6 +256,9 @@ enum Vault {
         path: PathBuf,
         /// It has a password.
         encrypted: bool,
+        /// The father's side of sharing, on its own thread. Dropped with
+        /// the vault, which stops that thread.
+        sharing: Sharing,
     },
     /// Opening failed; the error was shown in a notification.
     Failed,
@@ -261,8 +276,11 @@ struct OpenedVault {
     store: Store,
     path: PathBuf,
     encrypted: bool,
+    sharing: Sharing,
     children: Vec<Child>,
     labels: Vec<Label>,
+    account: Option<Account>,
+    shares: Vec<ChildShare>,
 }
 
 /// Opens the vault at `path` and reads everything the sidebar shows. An
@@ -281,12 +299,21 @@ async fn open_vault(path: PathBuf, password: Option<Password>) -> anyhow::Result
     .with_context(|| format!("couldn't open the vault at {}", paths::display(&path)))?;
     let children = store.children().await.context("couldn't load children")?;
     let labels = store.labels().await.context("couldn't load labels")?;
+    let account = store
+        .account()
+        .await
+        .context("couldn't load your account")?;
+    let shares = store.shares().await.context("couldn't load your sharing")?;
+    let sharing = Sharing::start(store.clone(), paths::shares_dir(&path))?;
     Ok(Opened::Open(OpenedVault {
         store,
         path,
         encrypted,
+        sharing,
         children,
         labels,
+        account,
+        shares,
     }))
 }
 
@@ -321,6 +348,16 @@ pub struct PapaApp {
     /// ⌘K. Drawn over everything else while open.
     palette: Entity<CommandPalette>,
     sidebar_visible: bool,
+    /// The father's Papa account, if he's signed in.
+    account: Option<Account>,
+    /// Each shared child's share. `Rc`, like the lists above.
+    shares: Rc<Vec<ChildShare>>,
+    sync_status: sharing::SyncStatus,
+    /// The next or running sync of shared notes. Replacing it cancels one
+    /// still waiting for its delay.
+    sync_task: Option<Task<()>>,
+    /// The open sharing dialog, so the results of its buttons reach it.
+    share_dialog: Option<(Entity<crate::ui::ShareDialog>, Subscription)>,
     /// What's being exported to PDF, for the status bar: "Exporting
     /// Emma’s book…". One export at a time.
     exporting: Option<SharedString>,
@@ -407,6 +444,7 @@ impl PapaApp {
         })
         .detach();
         cx.set_global(VaultStatus::Unavailable);
+        cx.set_global(AccountStatus::default());
 
         Self {
             vault: Vault::Opening,
@@ -425,6 +463,11 @@ impl PapaApp {
             unlock_subscription: None,
             palette,
             sidebar_visible: true,
+            account: None,
+            shares: Rc::default(),
+            sync_status: sharing::SyncStatus::default(),
+            sync_task: None,
+            share_dialog: None,
             exporting: None,
             focus_handle: cx.focus_handle(),
             sidebar_focus,
@@ -451,14 +494,21 @@ impl PapaApp {
                         store: opened.store,
                         path: opened.path,
                         encrypted: opened.encrypted,
+                        sharing: opened.sharing,
                     },
                     cx,
                 );
                 self.last_activity = Instant::now();
                 self.children = Rc::new(opened.children);
                 self.labels = Rc::new(opened.labels);
+                self.account = opened.account;
+                self.shares = Rc::new(opened.shares);
                 self.catalog_changed(window, cx);
+                self.sharing_changed(cx);
                 self.sidebar_focus.focus(window, cx);
+                // Whatever the last session didn't get to: syncing is
+                // always safe to repeat.
+                self.schedule_sync(Duration::ZERO, window, cx);
             }
             Ok(Opened::Locked(path)) => self.show_locked(path, window, cx),
             Err(err) => {
@@ -606,6 +656,10 @@ impl Render for PapaApp {
             .on_action(cx.listener(Self::remove_password))
             .on_action(cx.listener(Self::export_backup))
             .on_action(cx.listener(Self::restore_backup))
+            .on_action(cx.listener(Self::sign_in))
+            .on_action(cx.listener(Self::create_account))
+            .on_action(cx.listener(Self::sign_out))
+            .on_action(cx.listener(Self::sync_now))
             // Using the window keeps an encrypted vault from auto-locking.
             .on_mouse_move(cx.listener(|this, _, _, _| this.last_activity = Instant::now()))
             .capture_any_mouse_down(
@@ -643,6 +697,7 @@ impl Render for PapaApp {
                                             .child(
                                                 AppSidebar::new(
                                                     &self.children,
+                                                    &self.shared_children(),
                                                     &self.labels,
                                                     self.selection.filter,
                                                     self.is_open(),
@@ -693,6 +748,7 @@ impl Render for PapaApp {
                     })
                     .left(status)
                     .when_some(self.exporting.clone(), |bar, exporting| bar.left(exporting))
+                    .when_some(self.sync_label(), |bar, label| bar.right(label))
                     .right(cx.theme().theme_name().clone()),
             )
             .children(lightbox)

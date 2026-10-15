@@ -321,6 +321,11 @@ fn icon(command: PaletteCommand) -> Icon {
         PaletteCommand::ChangePassword | PaletteCommand::RemovePassword => Lucide::KeyRound.into(),
         PaletteCommand::ExportBackup => Lucide::DatabaseBackup.into(),
         PaletteCommand::RestoreBackup => Lucide::ArchiveRestore.into(),
+        PaletteCommand::ToggleShared(_) => Lucide::Share2.into(),
+        PaletteCommand::ShareChild(_) => Lucide::Cloud.into(),
+        PaletteCommand::SignIn => Lucide::LogIn.into(),
+        PaletteCommand::SignOut => Lucide::LogOut.into(),
+        PaletteCommand::SyncNow => Lucide::RefreshCw.into(),
     }
 }
 
@@ -421,6 +426,8 @@ mod tests {
                 vim_mode: false,
                 encrypted: false,
                 list_export: None,
+                signed_in: false,
+                shared_children: &[],
             });
             let palette = host.read(cx).palette.clone();
             palette.update(cx, |palette, cx| palette.open(groups, false, window, cx));

@@ -7,8 +7,10 @@ use std::fmt;
 use std::str::FromStr;
 
 use jiff::Timestamp;
+use papa_proto::Secret;
 use uuid::Uuid;
 
+use crate::share::{AccessKey, Sealed};
 use crate::{Error, Result};
 
 /// Longest allowed name for a child or label, in characters.
@@ -108,6 +110,9 @@ pub struct Note {
     pub children: Vec<ChildId>,
     /// Its labels, alphabetically.
     pub labels: Vec<LabelId>,
+    /// The children who can see it, in sidebar order: always some of
+    /// `children`, and only children whose sharing is on.
+    pub shared_with: Vec<ChildId>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -139,6 +144,40 @@ pub struct NoteSummary {
     /// How many images are attached.
     pub images: usize,
     pub created_at: Timestamp,
+}
+
+/// The father's account on the relay, which sharing needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    /// The relay's address, without `/v1`.
+    pub relay_url: String,
+    pub email: String,
+    pub session: Secret,
+    pub expires_at: Timestamp,
+}
+
+/// Sharing with one child, as the father's vault remembers it. The
+/// content key isn't here: it stays on the database thread.
+#[derive(Clone, Debug)]
+pub struct ChildShare {
+    pub child_id: ChildId,
+    /// The relay's id for the share.
+    pub share_id: String,
+    pub relay_url: String,
+    /// Where the share's database syncs.
+    pub database_url: String,
+    /// What the child signs in with.
+    pub access_key: AccessKey,
+    /// Counts the share's content keys: 1, then one more for each new
+    /// access key.
+    pub key_epoch: i64,
+    /// The content key wrapped under the access key: the share's
+    /// `share_key` row.
+    pub wrapped_key: Sealed,
+    /// The relay still knows the previous access key, not this one.
+    pub auth_key_stale: bool,
+    pub created_at: Timestamp,
+    pub last_synced_at: Option<Timestamp>,
 }
 
 /// What the father enters when creating a note. The store assigns the id and

@@ -88,9 +88,21 @@ cargo run -p papa-relay -- admin invite create "Me"   # in another terminal
 
 Its settings are environment variables, listed in [.env.example](.env.example).
 
+### Sharing notes (father's side)
+
+With `tursodb` and the relay running as above, start the app, then:
+
+1. **Sign in.** ⌘K → "Sign in to Papa…", or Settings → Sharing. The server is `http://127.0.0.1:8787` by default; "Create account…" takes the invite code from `admin invite create`.
+2. **Turn sharing on for a child.** Right-click them in the sidebar → Sharing… → Start sharing (or ⌘K → "Sharing with Emma…"). The dialog shows the child's access key, `PAPA-XXXX-…`, to copy, replace or revoke.
+3. **Share a note.** Open a note about that child, then tick "Emma can read it" under the + next to its date (or ⌘K → "Emma can read it").
+
+Papa encrypts the shared notes on your computer, writes them to `shares/<child>.db` next to the vault, and pushes them a few seconds after each change. The status bar shows the last sync.
+
+Some tests start `tursodb` to sync for real. They look for it on the `PATH` (or in `$TURSODB`) and skip when it's missing; CI installs it and sets `PAPA_REQUIRE_TURSODB=1`, so there they can't skip.
+
 ## Privacy
 
-Real vaults live in your operating system's app-data directory, never in this repository. A vault can be locked with a password, which encrypts it on disk (Settings → Privacy); without the password the file is unreadable, and a forgotten password can't be recovered. Settings → Data → Back up saves the whole vault as one file to keep elsewhere. Anything shared through the cloud is encrypted on your device first, so the server only ever stores ciphertext. Screenshots and test data use invented children and notes.
+Real vaults live in your operating system's app-data directory, never in this repository. A vault can be locked with a password, which encrypts it on disk (Settings → Privacy); without the password the file is unreadable, and a forgotten password can't be recovered. Settings → Data → Back up saves the whole vault as one file to keep elsewhere. Anything shared through the cloud is encrypted on your device first, so the server only ever stores ciphertext: never a note's text, its labels, or which children it's about. Screenshots and test data use invented children and notes.
 
 ## License
 

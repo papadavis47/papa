@@ -77,11 +77,12 @@ Turso Cloud has no row-level security. Its recommended pattern is **one database
   - Everything in the cloud is ciphertext: titles, bodies, labels, images, messages. Only ids, sizes and timestamps are visible.
   - So a breach of Turso or the relay doesn't expose anything a father wrote about his kids.
 - **Child access key** (the only child credential in v1; children don't set their own password):
-  - The app generates a strong key per child, e.g. `PAPA-7K3Q-M9XD-…`, about 128 bits. The father hands it over in person or by text.
+  - The app generates a strong key per child, e.g. `PAPA-7K3Q-M9XD-…`: 130 random bits plus a checksum against typos. The father hands it over in person or by text.
   - The child signs in with **father's email + access key**.
   - From the key, the app derives two separate keys with Argon2id followed by HKDF:
     - an `auth_key`, sent to the relay to get a token,
     - an `enc_key`, which never leaves the device and unwraps the share's content key.
+  - As built in Phase 11 ([ADR 0015](docs/adr/0015-sharing-keys-and-idempotent-projection.md)): Argon2id at 19 MiB and 2 passes with a fixed salt, since nothing can carry a per-share salt to the child before sign-in; every sealed row is bound to its share, row and key epoch.
 - **Revoking or rotating:** the father can revoke a share, which deletes the cloud DB and its tokens, or regenerate the key. Regenerating re-encrypts the share with a new content key.
 - **Permissions:**
   - Child tokens are read-only on notes, with insert-only rights on `message` (Turso's fine-grained table permissions).
@@ -105,7 +106,7 @@ Turso Cloud has no row-level security. Its recommended pattern is **one database
   - The Turso Platform token lives only on the server.
 - **Self-hosting stays possible but isn't built yet:**
   - The app reads the relay URL from settings.
-  - The relay URL is part of the child's access key, so children never type it.
+  - The relay URL is part of the child's access key, so children never type it. (Not yet: Phase 11's key carries only the secret; Phase 12, which reads keys, picks the format.)
   - A "use my own server" option could be added later without changing the design.
 - **Before inviting friends:** a short privacy policy and an "export / delete my account" function. The relay stores emails and metadata even though content is encrypted.
 
@@ -175,8 +176,9 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
 | `note_label` | note_id, label_id |
 | `image` | id, note_id, mime, width, height, sha256, created_at |
 | `image_data` | image_id, kind (thumb / display / original), mime, bytes — *one row per version; see [ADR 0009](docs/adr/0009-images-stored-in-the-vault.md)* |
-| `share` | child_id, remote_db, wrapped_content_key, key_salt, status, last_synced_at |
-| `note_share` | note_id, child_id, shared_at, remote_version — *which notes each child can see* |
+| `account` | relay_url, email, session_token, expires_at — *the father's relay account; one row* |
+| `share` | child_id, share_id, relay_url, database_url, access_key, content_key, wrapped_nonce, wrapped_key, key_epoch, auth_key_stale, created_at, last_synced_at |
+| `note_share` | note_id, child_id, shared_at — *which notes each child can see; what the cloud holds is read from the replica itself, not remembered here (ADR 0015)* |
 | `message` | id, child_id, direction, body, created_at, read_at, remote_id |
 | `schema_version` | migrations |
 
@@ -188,9 +190,11 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
   - Sharing is off by default. A per-child setting "share new notes automatically" can turn it on.
 - **Labels** are always private to the father. They are never sent to the cloud, and shared notes don't carry them.
 
-**Cloud share DB** (one per shared child). All payloads are encrypted with XChaCha20-Poly1305:
-- `shared_note(id, ciphertext, nonce, updated_at, deleted)` — the ciphertext holds title, body and dates, never labels
-- `shared_blob(id, note_id, ciphertext, nonce)`
+**Cloud share DB** (one per shared child). All payloads are encrypted with XChaCha20-Poly1305, as built in Phase 11:
+- `share_schema(version)` — the share database's own schema version (the file header doesn't sync)
+- `share_key(epoch, nonce, wrapped_key)` — the content key, wrapped under the child's `enc_key`
+- `shared_note(id, updated_at, key_epoch, nonce, ciphertext)` — the ciphertext holds title, body, dates and the ids of its images, never labels. Unshared or deleted notes are deleted rows; the deletion syncs.
+- `shared_blob(id, kind, note_id, key_epoch, nonce, ciphertext)` — thumbnail and display copy of each image; originals stay home
 - `message(id, sender, ciphertext, nonce, created_at)`
 - `receipt(message_id, read_at)`
 

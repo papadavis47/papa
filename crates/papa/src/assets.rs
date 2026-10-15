@@ -15,6 +15,7 @@ gpui_kit::assets::icon_assets!(
     [
         ArchiveRestore,
         BookDown,
+        Cloud,
         DatabaseBackup,
         FileDown,
         Hash,
@@ -25,9 +26,11 @@ gpui_kit::assets::icon_assets!(
         List,
         Lock,
         LockKeyhole,
+        LogIn,
         LogOut,
         NotebookPen,
         SearchX,
+        Share2,
         Shield,
         Trash,
         UserPlus

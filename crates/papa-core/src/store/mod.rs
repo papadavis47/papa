@@ -18,6 +18,7 @@
 mod db;
 mod migrations;
 mod rekey;
+mod shares;
 
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -25,9 +26,11 @@ use std::thread;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::lock::{self, KeyFile, Password, VaultKey, VaultKind, key_path};
+use crate::share::projection::{Manifest, ShareChanges};
+use crate::share::{AccessKey, ContentKey, Sealed};
 use crate::{
-    Child, ChildDraft, ChildId, EncodedImage, Error, ImageId, Label, LabelId, Note, NoteDraft,
-    NoteId, NoteImage, NoteQuery, NoteSummary, PreparedImage, Result,
+    Account, Child, ChildDraft, ChildId, ChildShare, EncodedImage, Error, ImageId, Label, LabelId,
+    Note, NoteDraft, NoteId, NoteImage, NoteQuery, NoteSummary, PreparedImage, Result,
 };
 use db::{Db, Location};
 
@@ -63,6 +66,7 @@ enum Request {
     UpdateNoteText(NoteId, String, String, Reply<Note>),
     SetNoteChildren(NoteId, Vec<ChildId>, Reply<Note>),
     SetNoteLabels(NoteId, Vec<LabelId>, Reply<Note>),
+    SetNoteShared(NoteId, ChildId, bool, Reply<Note>),
     DeleteNote(NoteId, Reply<()>),
     NoteImages(NoteId, Reply<Vec<NoteImage>>),
     // Boxed: a `PreparedImage` is much larger than the other variants, and
@@ -70,12 +74,32 @@ enum Request {
     AddImage(NoteId, Box<PreparedImage>, Reply<NoteImage>),
     DisplayImage(ImageId, Reply<EncodedImage>),
     DeleteImage(ImageId, Reply<()>),
+    Account(Reply<Option<Account>>),
+    SetAccount(Account, Reply<()>),
+    ClearAccount(Reply<()>),
+    Shares(Reply<Vec<ChildShare>>),
+    Share(ChildId, Reply<Option<ChildShare>>),
+    AddShare(Box<ChildShare>, ContentKey, Reply<()>),
+    RekeyShare(Box<Rekey>, Reply<ChildShare>),
+    AuthKeyUpdated(ChildId, i64, Reply<()>),
+    ShareSynced(ChildId, jiff::Timestamp, Reply<()>),
+    RemoveShare(ChildId, Reply<()>),
+    ShareChanges(ChildId, Box<Manifest>, usize, Reply<ShareChanges>),
     IsEncrypted(Reply<bool>),
     SetPassword(Option<Password>, Password, Reply<()>),
     RemovePassword(Password, Reply<()>),
     Backup(PathBuf, Reply<()>),
     Check(Reply<()>),
     Close(Reply<()>),
+}
+
+/// A share's new keys, for [`Store::rekey_share`].
+pub(crate) struct Rekey {
+    pub child: ChildId,
+    pub epoch: i64,
+    pub access_key: AccessKey,
+    pub content_key: ContentKey,
+    pub wrapped: Sealed,
 }
 
 /// How the database thread gets the vault's key, if it needs one.
@@ -211,6 +235,14 @@ impl Store {
             .await
     }
 
+    /// Shares the note with a child, or stops. Fails with
+    /// [`Error::CantShareNote`] unless the note is about the child and
+    /// sharing with the child is on.
+    pub async fn set_note_shared(&self, id: NoteId, child: ChildId, shared: bool) -> Result<Note> {
+        self.call(|reply| Request::SetNoteShared(id, child, shared, reply))
+            .await
+    }
+
     /// Deletes a note, and its images with it.
     pub async fn delete_note(&self, id: NoteId) -> Result<()> {
         self.call(|reply| Request::DeleteNote(id, reply)).await
@@ -238,6 +270,67 @@ impl Store {
     /// Deletes an image and its bytes.
     pub async fn delete_image(&self, id: ImageId) -> Result<()> {
         self.call(|reply| Request::DeleteImage(id, reply)).await
+    }
+
+    // --- Sharing. The `Sharing` actor uses most of these; the UI reads. ---
+
+    /// The father's relay account, if he's signed in.
+    pub async fn account(&self) -> Result<Option<Account>> {
+        self.call(Request::Account).await
+    }
+
+    pub(crate) async fn set_account(&self, account: Account) -> Result<()> {
+        self.call(|reply| Request::SetAccount(account, reply)).await
+    }
+
+    pub(crate) async fn clear_account(&self) -> Result<()> {
+        self.call(Request::ClearAccount).await
+    }
+
+    /// Every child's share, in sidebar order.
+    pub async fn shares(&self) -> Result<Vec<ChildShare>> {
+        self.call(Request::Shares).await
+    }
+
+    pub async fn share(&self, child: ChildId) -> Result<Option<ChildShare>> {
+        self.call(|reply| Request::Share(child, reply)).await
+    }
+
+    pub(crate) async fn add_share(&self, share: ChildShare, content_key: ContentKey) -> Result<()> {
+        let share = Box::new(share);
+        self.call(|reply| Request::AddShare(share, content_key, reply))
+            .await
+    }
+
+    pub(crate) async fn rekey_share(&self, rekey: Rekey) -> Result<ChildShare> {
+        let rekey = Box::new(rekey);
+        self.call(|reply| Request::RekeyShare(rekey, reply)).await
+    }
+
+    pub(crate) async fn auth_key_updated(&self, child: ChildId, epoch: i64) -> Result<()> {
+        self.call(|reply| Request::AuthKeyUpdated(child, epoch, reply))
+            .await
+    }
+
+    pub(crate) async fn share_synced(&self, child: ChildId, at: jiff::Timestamp) -> Result<()> {
+        self.call(|reply| Request::ShareSynced(child, at, reply))
+            .await
+    }
+
+    pub(crate) async fn remove_share(&self, child: ChildId) -> Result<()> {
+        self.call(|reply| Request::RemoveShare(child, reply)).await
+    }
+
+    /// See [`projection`](crate::share::projection).
+    pub(crate) async fn share_changes(
+        &self,
+        child: ChildId,
+        manifest: Manifest,
+        budget: usize,
+    ) -> Result<ShareChanges> {
+        let manifest = Box::new(manifest);
+        self.call(|reply| Request::ShareChanges(child, manifest, budget, reply))
+            .await
     }
 
     /// Whether the vault is encrypted with a password.
@@ -426,6 +519,52 @@ async fn handle(db: &mut Db, request: Request) {
         Request::SetNoteLabels(id, labels, reply) => {
             let _ = reply.send(db.set_note_labels(id, &labels).await);
         }
+        Request::SetNoteShared(id, child, shared, reply) => {
+            let _ = reply.send(db.set_note_shared(id, child, shared).await);
+        }
+        Request::Account(reply) => {
+            let _ = reply.send(db.account().await);
+        }
+        Request::SetAccount(account, reply) => {
+            let _ = reply.send(db.set_account(&account).await);
+        }
+        Request::ClearAccount(reply) => {
+            let _ = reply.send(db.clear_account().await);
+        }
+        Request::Shares(reply) => {
+            let _ = reply.send(db.shares().await);
+        }
+        Request::Share(child, reply) => {
+            let _ = reply.send(db.share(child).await);
+        }
+        Request::AddShare(share, content_key, reply) => {
+            let _ = reply.send(db.add_share(&share, &content_key).await);
+        }
+        Request::RekeyShare(rekey, reply) => {
+            let Rekey {
+                child,
+                epoch,
+                access_key,
+                content_key,
+                wrapped,
+            } = *rekey;
+            let result = db
+                .rekey_share(child, epoch, &access_key, &content_key, &wrapped)
+                .await;
+            let _ = reply.send(result);
+        }
+        Request::AuthKeyUpdated(child, epoch, reply) => {
+            let _ = reply.send(db.auth_key_updated(child, epoch).await);
+        }
+        Request::ShareSynced(child, at, reply) => {
+            let _ = reply.send(db.share_synced(child, at).await);
+        }
+        Request::RemoveShare(child, reply) => {
+            let _ = reply.send(db.remove_share(child).await);
+        }
+        Request::ShareChanges(child, manifest, budget, reply) => {
+            let _ = reply.send(db.share_changes(child, &manifest, budget).await);
+        }
         Request::DeleteNote(id, reply) => {
             let _ = reply.send(db.delete_note(id).await);
         }
@@ -456,6 +595,8 @@ async fn handle(db: &mut Db, request: Request) {
     }
 }
 
+#[cfg(test)]
+mod share_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

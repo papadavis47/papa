@@ -224,6 +224,7 @@ impl PapaApp {
                     cx,
                 );
             }
+            SidebarEvent::ShareChild(id) => self.open_share_dialog(id, window, cx),
             SidebarEvent::DeleteChild(id) => {
                 let Some(child) = self.child(id) else { return };
                 dialogs::confirm_delete(

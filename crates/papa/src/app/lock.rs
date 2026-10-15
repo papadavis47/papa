@@ -89,6 +89,13 @@ impl PapaApp {
             })
         });
         self.editor_subscription = None;
+        // Sharing's thread stops once the vault's `Sharing` is dropped,
+        // below, and the sync task's clone with it.
+        self.sync_task = None;
+        self.share_dialog = None;
+        self.account = None;
+        self.shares = Rc::default();
+        self.sync_status = super::sharing::SyncStatus::default();
         self.children = Rc::default();
         self.labels = Rc::default();
         self.notes = Rc::default();
@@ -105,6 +112,7 @@ impl PapaApp {
             _ => None,
         };
         self.set_vault(Vault::Opening, cx);
+        self.sharing_changed(cx);
         async move {
             if let Some(save) = save {
                 save.await;
@@ -314,11 +322,18 @@ impl PapaApp {
             this.update_in(cx, |this, window, cx| match result {
                 Ok(()) => {
                     window.close_dialog(cx);
-                    if let Vault::Open { store, path, .. } = &this.vault {
+                    if let Vault::Open {
+                        store,
+                        path,
+                        sharing,
+                        ..
+                    } = &this.vault
+                    {
                         let vault = Vault::Open {
                             store: store.clone(),
                             path: path.clone(),
                             encrypted,
+                            sharing: sharing.clone(),
                         };
                         this.set_vault(vault, cx);
                     }

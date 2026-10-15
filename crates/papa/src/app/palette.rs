@@ -5,8 +5,8 @@ use gpui_kit::{App, Context, Entity, Window};
 use papa_core::{NoteFilter, NoteId, NoteQuery, NoteSummary};
 
 use super::{
-    ChangePassword, ExportBackup, PapaApp, RemovePassword, RestoreBackup, ToggleCommandPalette,
-    Vault,
+    ChangePassword, ExportBackup, PapaApp, RemovePassword, RestoreBackup, SignIn, SignOut, SyncNow,
+    ToggleCommandPalette, Vault,
 };
 use crate::palette::{self, OpenNote, PaletteCommand, PaletteData, PaletteGroup};
 use crate::settings::AppSettings;
@@ -22,7 +22,9 @@ impl PapaApp {
             .map(|note| OpenNote {
                 children: &note.children,
                 labels: &note.labels,
+                shared_with: &note.shared_with,
             });
+        let shared_children = self.shared_children();
         let list_export = (!self.notes.is_empty()).then(|| self.list_export_name(cx));
         palette::groups(&PaletteData {
             vault_open: self.is_open(),
@@ -40,6 +42,8 @@ impl PapaApp {
                 }
             ),
             list_export: list_export.as_deref(),
+            signed_in: self.account.is_some(),
+            shared_children: &shared_children,
         })
     }
 
@@ -115,6 +119,15 @@ impl PapaApp {
                     editor.update(cx, |editor, cx| editor.toggle_label(id, window, cx));
                 }
             }
+            PaletteCommand::ToggleShared(id) => {
+                if let Some(editor) = &self.editor {
+                    editor.update(cx, |editor, cx| editor.toggle_shared(id, window, cx));
+                }
+            }
+            PaletteCommand::ShareChild(id) => self.open_share_dialog(id, window, cx),
+            PaletteCommand::SignIn => self.sign_in(&SignIn, window, cx),
+            PaletteCommand::SignOut => self.sign_out(&SignOut, window, cx),
+            PaletteCommand::SyncNow => self.sync_now(&SyncNow, window, cx),
             PaletteCommand::ToggleVimMode => {
                 AppSettings::update(cx, |s| s.editor.vim_mode = !s.editor.vim_mode);
             }

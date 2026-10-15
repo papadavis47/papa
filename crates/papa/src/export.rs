@@ -235,6 +235,7 @@ mod tests {
             body: "Text".to_owned(),
             children: children.iter().map(|child| child.id).collect(),
             labels: Vec::new(),
+            shared_with: Vec::new(),
             created_at: at,
             updated_at: at,
         };

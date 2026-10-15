@@ -29,7 +29,6 @@ use papa_pdf::Photo;
 
 use super::{ExportNote, ExportNotes, PapaApp, Vault};
 use crate::export::{self, Scope};
-use crate::open;
 use crate::settings::AppSettings;
 use crate::ui::sentence;
 
@@ -177,7 +176,14 @@ async fn load(store: &Store, ids: Vec<NoteId>) -> papa_core::Result<Vec<(Note, V
     Ok(notes)
 }
 
-/// Says how the export went. A success offers to open the PDF.
+/// Says how the export went. A success says where the PDF is, and offers
+/// to show it in the file manager.
+///
+/// Not to open it: on Linux that starts the PDF viewer with Papa's own
+/// environment, and started from a terminal installed as a snap, that
+/// environment points the viewer at the snap's libraries, which crash it.
+/// Showing the file goes through the desktop portal, so the file manager
+/// starts the way the desktop starts it.
 fn exported(
     result: anyhow::Result<PathBuf>,
     what: &str,
@@ -193,12 +199,16 @@ fn exported(
             }
             Notification::success(message)
                 .title(sentence(format!("Exported {what}")))
-                .action(move |_, _, _| {
+                .action(move |_, _, cx| {
                     let path = path.clone();
-                    Button::new("open-pdf")
+                    Button::new("show-pdf")
                         .primary()
-                        .label("Open")
-                        .on_click(move |_, _, cx| open::open(&path, cx))
+                        .label("Show in folder")
+                        // Its job is done once the file manager opens.
+                        .on_click(cx.listener(move |notification, _, window, cx| {
+                            cx.reveal_path(&path);
+                            notification.dismiss(window, cx);
+                        }))
                 })
         }
         Err(err) => Notification::error(sentence(format!("{err:#}")))

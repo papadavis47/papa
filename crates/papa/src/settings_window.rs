@@ -385,7 +385,7 @@ impl SettingsPanel {
                     .item(
                         SettingItem::new(
                             "Your themes",
-                            open_folder_button(paths::themes_dir().ok()),
+                            themes_folder_button(paths::themes_dir().ok()),
                         )
                         .description(
                             "Theme files you put in this folder appear above. \
@@ -780,21 +780,21 @@ fn reveal_button(path: Option<PathBuf>) -> SettingField<SharedString> {
     })
 }
 
-/// Opens `dir` in the file manager, creating it first if needed.
-fn open_folder_button(dir: Option<PathBuf>) -> SettingField<SharedString> {
+/// Shows `dir` in the file manager, creating it first if needed.
+fn themes_folder_button(dir: Option<PathBuf>) -> SettingField<SharedString> {
     SettingField::render(move |_, _, _| {
         let dir = dir.clone();
         Button::new("open-themes")
             .outline()
             .small()
             .icon(IconName::FolderOpen)
-            .label("Open folder")
+            .label("Show in folder")
             .disabled(dir.is_none())
             .on_click(move |_, _, cx| {
                 if let Some(dir) = &dir {
                     match std::fs::create_dir_all(dir) {
-                        Ok(()) => crate::open::open(dir, cx),
-                        Err(err) => crate::ui::notify_error("Couldn't open the folder", err, cx),
+                        Ok(()) => cx.reveal_path(dir),
+                        Err(err) => crate::ui::notify_error("Couldn't create the folder", err, cx),
                     }
                 }
             })

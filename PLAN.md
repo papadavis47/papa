@@ -363,6 +363,7 @@ Phases 0–9 give a complete, useful, **offline** app before any cloud work star
 - **Tests where they count:** `papa-core` (store, crypto round-trips, share projection), the Vim parser, and relay API integration tests.
 - **Commits:** small and readable, one feature per branch, PRs with a description even when working solo.
 - **Demo mode:** `papa --demo` loads sample children and notes, so screenshots never contain real family data.
+  - As built in Phase 15 ([ADR 0019](docs/adr/0019-demo-mode-as-a-fresh-throwaway-vault.md)): a fresh vault in the temporary folder on every launch, with its own settings. Three invented children, sixteen notes dated back from today, and four generated illustrations compiled into the binary.
 - **Releases:** tagged versions with Linux and macOS downloads (Phase 14).
 
 ---

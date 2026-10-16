@@ -29,7 +29,70 @@ papa-pdf.workspace = true
 [lints]
 workspace = true
 
+[build-dependencies]
+# Embeds the icon and version info in papa.exe (build.rs). Only does anything
+# when building for Windows. The default `toml` feature would read extra
+# fields from Cargo.toml, which Papa doesn't use.
+winresource = { version = "0.1.34", default-features = false }
+
 [dev-dependencies]
 # The same gpui-kit, plus a headless test window for UI tests: render real
 # components, press keys, then check state, focus and callbacks.
 gpui-kit = { version = "0.7", features = ["test-support"] }
+
+# How `cargo packager` turns the binary into installable packages (Phase 14,
+# ADR 0018). Paths are relative to this file. Run from the repository root:
+#
+#   cargo packager -p papa --profile dist --formats deb,appimage   # Linux
+#   cargo packager -p papa --profile dist --formats app,dmg        # macOS
+#   cargo packager -p papa --profile dist --formats nsis,wix       # Windows
+#
+# It builds the binary first (`before-packaging-command`), then writes the
+# packages to `target/packages/`.
+[package.metadata.packager]
+product-name = "Papa"
+# The menu entry's tooltip and the package's summary.
+description = "A private journal for fathers about their children"
+identifier = "com.johnwilliamdavis.papa"
+publisher = "John William Davis"
+authors = ["John William Davis <jwdavisdeveloper@gmail.com>"]
+homepage = "https://github.com/papadavis47/papa"
+category = "Productivity"
+copyright = "Copyright © 2026 John William Davis. MIT OR Apache-2.0."
+long-description = "Keep a profile for each of your children, write notes and save photos about them, and, if you choose, share some of those notes with a child, who can read them in the same app, export them to PDF and message you back."
+before-packaging-command = "cargo build -p papa --profile dist --locked"
+out-dir = "../../target/packages"
+binaries = [{ path = "papa", main = true }]
+# Rendered from icons/papa.svg by icons/render.py: PNGs for Linux, the .icns
+# for macOS, the .ico for Windows.
+icons = [
+  "icons/32x32.png",
+  "icons/64x64.png",
+  "icons/128x128.png",
+  "icons/256x256.png",
+  "icons/512x512.png",
+  "icons/papa.icns",
+  "icons/icon.ico",
+]
+
+[package.metadata.packager.deb]
+section = "utils"
+# What the binary links against (`readelf -d`), plus what GPUI opens at run
+# time (`LD_DEBUG=files`): the Wayland client library, and Vulkan or EGL to
+# draw with. Fonts are found and read without fontconfig or FreeType.
+depends = [
+  "libc6",
+  "libgcc-s1",
+  "libxcb1",
+  "libxkbcommon0",
+  "libxkbcommon-x11-0",
+  "libwayland-client0",
+  "libvulkan1 | libegl1",
+]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+# "-" signs ad hoc: no Apple account, but a sealed bundle, so macOS offers
+# "Open Anyway" instead of calling a downloaded copy damaged. Replace it with
+# a Developer ID to sign for real (and notarise, via APPLE_* variables).
+signing-identity = "-"

@@ -344,3 +344,17 @@ The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-p
 - Optional encryption at rest for the local vault (Turso, AEGIS-256), with its key wrapped under the father's password (Argon2id + XChaCha20-Poly1305). Locking closes the vault and drops its key. Done in Phase 9; the rest is planned.
 - End-to-end encryption for everything in the cloud (XChaCha20-Poly1305, Phase 11). The relay and Turso only see ciphertext, ids, versions and timestamps, and who wrote each message. Keys for the cloud live in the vault, which is encrypted at rest when it has a password.
 - Tokens are short-lived (one hour) and scoped to a single database. No admin or Platform credentials ship in the app. The relay stores only hashes of passwords, session tokens, invite codes and child keys (Phase 10).
+
+## Packaging
+
+The app is one self-contained executable: icons, themes and Typst's fonts are compiled in, and its data lives in the OS folders above (on Windows, under `%APPDATA%\papa`). [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) wraps it for each OS, configured in `crates/papa/Cargo.toml` ([ADR 0018](adr/0018-packaging-with-cargo-packager.md)):
+
+| OS | Packages | Built on |
+|---|---|---|
+| Linux x86_64 | `.deb`, AppImage | Ubuntu 22.04 (glibc 2.35) |
+| macOS (Apple silicon) | `.app` in a `.dmg`, signed ad hoc | macOS, deployment target 11.0 |
+| Windows x86_64 | NSIS installer, MSI | Windows |
+
+- **Build profile:** `dist`, which is `release` plus thin LTO.
+- **Icon:** drawn once in `crates/papa/icons/papa.svg` and rendered by `render.py` to the PNGs, `papa.icns` and `icon.ico` beside it. On Windows, `build.rs` embeds the `.ico` in `papa.exe`. On Linux, the windows' app id `papa` ties them to the installed `papa.desktop`.
+- **CI:** `release.yml` builds and checks every package on pull requests that touch packaging. A `v*` tag puts them in a draft GitHub release.

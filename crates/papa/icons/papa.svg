@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Papa's app icon: Lucide's book-heart (ISC; see README.md) on the Papa
+       Paper theme's terracotta, in Apple's 824 px tile on a 1024 px canvas. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#B95E3A"/>
+      <stop offset="1" stop-color="#94472A"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <g transform="translate(256 256) scale(21.333)" fill="none" stroke="#FFF9F2"
+     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/>
+    <path fill="#F2B48A" d="M8.62 9.8A2.25 2.25 0 1 1 12 6.836a2.25 2.25 0 1 1 3.38 2.966l-2.626 2.856a.998.998 0 0 1-1.507 0z"/>
+  </g>
+</svg>

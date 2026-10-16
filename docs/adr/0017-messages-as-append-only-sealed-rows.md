@@ -1,6 +1,6 @@
 # 0017. Messages: append-only sealed rows, current-key only, and polling
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-15
 
 ## Context

@@ -1,6 +1,6 @@
 # 0018. Packaging: cargo-packager, a `dist` profile, and draft releases from tags
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-16
 
 ## Context

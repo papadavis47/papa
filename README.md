@@ -72,9 +72,9 @@ cargo run --release -- --demo
 
 More detail: [docs/architecture.md](docs/architecture.md) (crates, threading, storage, sharing and the security model) and the [decision records](docs/adr/), which say *why* each big choice was made.
 
-### What I learned
+### Technical highlights
 
-Papa is also how I'm learning Rust. Each phase in [PLAN.md](PLAN.md#8-phases--one-step-at-a-time) introduced something new:
+What the [phases in PLAN.md](PLAN.md#8-phases--one-step-at-a-time) put into practice:
 
 - **Rust itself:** ownership across threads (a database actor behind a cloneable channel handle), `async` with two executors (GPUI's and tokio's), errors with `thiserror` and `anyhow`, enums that make wrong states unrepresentable (father mode and child mode are separate types), and test-driven state machines (the Vim parser).
 - **GPUI:** entities vs. components, subscriptions and events, actions and key contexts, background tasks, virtualized lists, animation, and testing views in a headless window.

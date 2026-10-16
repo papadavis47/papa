@@ -119,7 +119,29 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-`cargo run -- --demo` opens the [demo](#try-it) instead. The app keeps its vault in your OS data directory (`~/.local/share/papa/vault.db` on Linux, `~/Library/Application Support/papa/vault.db` on macOS). To try things out without touching it, point `PAPA_VAULT` at another file:
+### Running the demo in development
+
+The [demo](#try-it) runs from a normal debug build. Everything after `--` goes to Papa rather than to Cargo:
+
+```sh
+cargo run -- --demo             # debug build: quick to compile
+cargo run --release -- --demo   # optimised: slower to build, smoother to use
+./target/debug/papa --demo      # the binary the first command built, without Cargo
+cargo run -- --help             # Papa's options
+```
+
+Each run deletes the last demo and builds a new one in `papa-demo` in your temporary folder (`/tmp/papa-demo` on Linux, under `$TMPDIR` on macOS). Its settings live there too, so switching themes or turning on Vim mode in the demo doesn't change your own. To start over, quit and run it again. Its tests, and the command line's:
+
+```sh
+cargo test -p papa-core demo
+cargo test -p papa cli
+```
+
+The sample notes are in [`crates/papa-core/src/demo.rs`](crates/papa-core/src/demo.rs) and their photos in `crates/papa-core/demo/`. Edit either and the next `cargo run -- --demo` uses them.
+
+### Your own vault in development
+
+The app keeps its vault in your OS data directory (`~/.local/share/papa/vault.db` on Linux, `~/Library/Application Support/papa/vault.db` on macOS). To try things out without touching it, point `PAPA_VAULT` at another file:
 
 ```sh
 PAPA_VAULT=/tmp/papa-dev.db cargo run

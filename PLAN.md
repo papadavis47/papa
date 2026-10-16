@@ -179,7 +179,7 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
 | `account` | relay_url, email, session_token, expires_at — *the father's relay account; one row* |
 | `share` | child_id, share_id, relay_url, database_url, access_key, content_key, wrapped_nonce, wrapped_key, key_epoch, auth_key_stale, created_at, last_synced_at |
 | `note_share` | note_id, child_id, shared_at — *which notes each child can see; what the cloud holds is read from the replica itself, not remembered here (ADR 0015)* |
-| `message` | id, child_id, direction, body, created_at, read_at, remote_id |
+| `message` | id, child_id, sender (father / child), body, created_at, sent_at, read_at — *the same id in the share; the conversation outlives sharing (ADR 0017)* |
 | `schema_version` | migrations |
 
 **Behaviour**
@@ -195,8 +195,8 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
 - `share_key(epoch, nonce, wrapped_key)` — the content key, wrapped under the child's `enc_key`
 - `shared_note(id, updated_at, key_epoch, nonce, ciphertext)` — the ciphertext holds title, body, dates and the ids of its images, never labels. Unshared or deleted notes are deleted rows; the deletion syncs.
 - `shared_blob(id, kind, note_id, key_epoch, nonce, ciphertext)` — thumbnail and display copy of each image; originals stay home
-- `message(id, sender, ciphertext, nonce, created_at)`
-- `receipt(message_id, read_at)`
+- `message(id, sender, created_at, key_epoch, nonce, ciphertext)` — written by its sender, resealed by the father after a new key (schema 2, Phase 13)
+- `receipt(message_id, read_at)` — written by the recipient
 
 ---
 
@@ -237,6 +237,7 @@ All ids are UUIDv7 (sortable by time). Rows are soft-deleted with `deleted_at`, 
 **Messages**
 - A chat thread per child, built with the `MessageGroup` and `Bubble` components.
 - The app polls every 30–60 s while open, and immediately after you send a message. The sidebar shows an unread badge.
+- **As built in Phase 13** ([ADR 0017](docs/adr/0017-messages-as-append-only-sealed-rows.md)): Messages in the sidebar footer, ⌘⇧M or ⌘K "Write to {child}"; conversations in the middle column, one open on the right. Both apps poll every 30 s and sync at once after sending; a message shows "Sending…", then "Sent" and "Read". Only messages under the current key count. The child's app gets a sidebar: Notes from Dad and Messages.
 
 ---
 

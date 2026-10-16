@@ -4,14 +4,16 @@
 //! The work happens on `papa-core`'s sharing thread ([`Sharing`]); this
 //! module decides when to ask for it and shows the results. Syncs are
 //! debounced like autosave: a change schedules one a few seconds later,
-//! and another change before then pushes it back.
+//! and another change before then pushes it back. A sync also fetches
+//! messages, so one runs every [`POLL_EVERY`] too, and at once after the
+//! father sends a message.
 
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::{
-    AppContext as _, Context, Entity, Global, ParentElement as _, SharedString, Window, px,
+    AppContext as _, Context, Entity, Global, ParentElement as _, SharedString, Task, Window, px,
 };
 use jiff::Timestamp;
 use papa_core::relay::DEFAULT_RELAY_URL;
@@ -27,6 +29,9 @@ use crate::ui::{
 /// How long after the last change a sync starts. Typing saves every half
 /// second; this waits for a pause.
 const SYNC_DELAY: Duration = Duration::from_secs(3);
+
+/// How often shares sync while the app is open, to fetch messages.
+pub const POLL_EVERY: Duration = Duration::from_secs(30);
 
 /// Where syncing shared notes stands, for the status bar.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -119,6 +124,23 @@ impl PapaApp {
 
     // --- Syncing ---
 
+    /// Syncs every [`POLL_EVERY`], unless a sync is running already.
+    pub(super) fn poll(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL_EVERY).await;
+                let polled = this.update_in(cx, |this, window, cx| {
+                    if this.sync_status != SyncStatus::Syncing {
+                        this.schedule_sync(Duration::ZERO, window, cx);
+                    }
+                });
+                if polled.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
     /// Syncs every share after `delay`, unless another change comes first.
     pub(super) fn schedule_sync(
         &mut self,
@@ -161,6 +183,18 @@ impl PapaApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let received: Vec<ChildId> = match &results {
+            Ok(results) => results
+                .iter()
+                .filter(|(_, result)| {
+                    result
+                        .as_ref()
+                        .is_ok_and(|report| report.messages_received > 0)
+                })
+                .map(|(child, _)| *child)
+                .collect(),
+            Err(_) => Vec::new(),
+        };
         let failure = match results {
             Err(err) => Some(sentence(err)),
             Ok(results) => {
@@ -182,6 +216,9 @@ impl PapaApp {
         };
         // For each share's "last synced".
         self.reload_sharing(window, cx);
+        // Messages that came, went, or were read.
+        self.reload_messages(window, cx);
+        self.announce_messages(received, window, cx);
     }
 
     pub(super) fn sync_now(&mut self, _: &SyncNow, window: &mut Window, cx: &mut Context<Self>) {

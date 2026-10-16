@@ -89,6 +89,11 @@ impl PapaApp {
             })
         });
         self.editor_subscription = None;
+        self.conversation = None;
+        self.conversation_subscription = None;
+        self.conversation_child = None;
+        self.conversations = Rc::default();
+        self.pane = crate::state::Pane::Notes;
         // Sharing's thread stops once the vault's `Sharing` is dropped,
         // below, and the sync task's clone with it.
         self.sync_task = None;

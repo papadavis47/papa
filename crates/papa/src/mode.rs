@@ -18,7 +18,7 @@ use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, Global, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
-use papa_core::{ChildSession, SharedNotes, paths};
+use papa_core::{ChildSession, ShareContents, paths};
 
 use crate::app::PapaApp;
 use crate::child_app::{ChildApp, ChildAppEvent};
@@ -232,7 +232,7 @@ impl PapaWindow {
     fn show_child(
         &mut self,
         session: ChildSession,
-        contents: SharedNotes,
+        contents: ShareContents,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

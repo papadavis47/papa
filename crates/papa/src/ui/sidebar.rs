@@ -9,11 +9,13 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, ClickEvent, Hsla, IntoElement, RenderOnce, Styled as _, Window, rgb, transparent_black,
+    App, ClickEvent, Hsla, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, div,
+    rgb, transparent_black,
 };
 use papa_core::{Child, ChildId, Label, LabelId, NoteFilter};
 
 use crate::app::OpenSettings;
+use crate::state::Pane;
 
 /// Everything the sidebar can ask its parent to do.
 ///
@@ -28,6 +30,8 @@ pub enum SidebarEvent {
     EditChild(ChildId),
     /// Open the child's sharing dialog.
     ShareChild(ChildId),
+    /// Show the conversations.
+    Messages,
     DeleteChild(ChildId),
     AddLabel,
     RenameLabel(LabelId),
@@ -45,7 +49,12 @@ pub struct AppSidebar {
     /// Children whose sharing is on: they get a cloud next to their name.
     shared: Vec<ChildId>,
     labels: Vec<Label>,
-    selected: NoteFilter,
+    /// `None` while Messages is open instead of the notes.
+    selected: Option<NoteFilter>,
+    /// Messages is open.
+    messages: bool,
+    /// Messages from children the father hasn't read.
+    unread: usize,
     /// `false` until the vault is open, so nothing can be added too early.
     enabled: bool,
     /// The sidebar has keyboard focus: the selected entry gets a focus ring.
@@ -59,7 +68,7 @@ impl AppSidebar {
         children: &[Child],
         shared: &[ChildId],
         labels: &[Label],
-        selected: NoteFilter,
+        selected: Option<NoteFilter>,
         enabled: bool,
         on_event: impl Fn(&SidebarEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
@@ -68,10 +77,19 @@ impl AppSidebar {
             shared: shared.to_vec(),
             labels: labels.to_vec(),
             selected,
+            messages: false,
+            unread: 0,
             enabled,
             focused: false,
             on_event: Rc::new(on_event),
         }
+    }
+
+    /// Whether Messages is open, and how many are unread.
+    pub fn messages(mut self, open: bool, unread: usize) -> Self {
+        self.messages = open;
+        self.unread = unread;
+        self
     }
 
     /// Draws the focus ring, for when the sidebar has keyboard focus.
@@ -142,7 +160,7 @@ impl RenderOnce for AppSidebar {
                         .text_color(cx.theme().muted_foreground)
                 });
             }
-            let active = self.selected == NoteFilter::Child(child.id);
+            let active = self.selected == Some(NoteFilter::Child(child.id));
             filter_item(item, active, ring)
                 .on_click(send(SidebarEvent::Select(NoteFilter::Child(child.id))))
                 .context_menu(edit_menu(
@@ -161,7 +179,7 @@ impl RenderOnce for AppSidebar {
         let labels = self.labels.into_iter().map(|label| {
             let filter = NoteFilter::Label(label.id);
             let item = SidebarMenuItem::new(format!("# {}", label.name));
-            filter_item(item, self.selected == filter, ring)
+            filter_item(item, self.selected == Some(filter), ring)
                 .on_click(send(SidebarEvent::Select(filter)))
                 .context_menu(edit_menu(
                     &on_event,
@@ -180,18 +198,27 @@ impl RenderOnce for AppSidebar {
         let all_notes = SidebarMenu::new().child(
             filter_item(
                 SidebarMenuItem::new("All notes").icon(IconName::BookOpen),
-                self.selected == NoteFilter::All,
+                self.selected == Some(NoteFilter::All),
                 ring,
             )
             .on_click(send(SidebarEvent::Select(NoteFilter::All))),
         );
 
-        // Messages arrive in a later phase. Settings dispatches the same
-        // action as ⌘, so both open the one Settings window.
+        // Settings dispatches the same action as ⌘, so both open the one
+        // Settings window.
+        let unread = self.unread;
+        let messages = filter_item(
+            SidebarMenuItem::new("Messages").icon(IconName::Inbox),
+            self.messages,
+            ring,
+        )
+        .disable(!self.enabled)
+        .on_click(send(SidebarEvent::Messages))
+        .when(unread > 0, |item| {
+            item.suffix(move |_, cx| div().children(super::unread_pill(unread, cx)))
+        });
         let footer = SidebarMenu::new().children([
-            SidebarMenuItem::new("Messages")
-                .icon(IconName::Inbox)
-                .disable(true),
+            messages,
             SidebarMenuItem::new("Settings")
                 .icon(IconName::Settings)
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
@@ -212,5 +239,72 @@ impl RenderOnce for AppSidebar {
                     .child(SidebarMenu::new().children(labels.chain([add_label]))),
             )
             .footer(footer.render("sidebar-footer", window, cx))
+    }
+}
+
+type OnSelectPane = Rc<dyn Fn(&Pane, &mut Window, &mut App)>;
+
+/// The child's sidebar: Dad's notes, and the conversation with him.
+#[derive(IntoElement)]
+pub struct ChildSidebar {
+    pane: Pane,
+    notes: usize,
+    unread: usize,
+    on_select: OnSelectPane,
+}
+
+impl ChildSidebar {
+    pub fn new(
+        pane: Pane,
+        notes: usize,
+        unread: usize,
+        on_select: impl Fn(&Pane, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            pane,
+            notes,
+            unread,
+            on_select: Rc::new(on_select),
+        }
+    }
+}
+
+impl RenderOnce for ChildSidebar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let select = |pane: Pane| {
+            let on_select = self.on_select.clone();
+            move |_: &ClickEvent, window: &mut Window, cx: &mut App| on_select(&pane, window, cx)
+        };
+        let notes = self.notes;
+        let unread = self.unread;
+        let entries = SidebarMenu::new().children([
+            SidebarMenuItem::new("Notes from Dad")
+                .icon(IconName::BookOpen)
+                .active(self.pane == Pane::Notes)
+                .suffix(move |_, cx| {
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(notes.to_string())
+                })
+                .on_click(select(Pane::Notes)),
+            SidebarMenuItem::new("Messages")
+                .icon(IconName::Inbox)
+                .active(self.pane == Pane::Messages)
+                .when(unread > 0, |item| {
+                    item.suffix(move |_, cx| div().children(super::unread_pill(unread, cx)))
+                })
+                .on_click(select(Pane::Messages)),
+        ]);
+        let footer = SidebarMenu::new().child(
+            SidebarMenuItem::new("Settings")
+                .icon(IconName::Settings)
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx)),
+        );
+        Sidebar::new("child-sidebar")
+            .collapsible(SidebarCollapsible::None)
+            .w_full()
+            .child(SidebarGroup::new("Dad").child(entries))
+            .footer(footer.render("child-sidebar-footer", window, cx))
     }
 }

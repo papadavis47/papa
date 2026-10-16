@@ -14,11 +14,13 @@
 //!                   └─▶ Replica (shares/<child>.db) ──push──▶ cloud
 //! ```
 //!
-//! A sync works out what the child's database is missing, writes it to the
-//! local replica, and pushes. The vault is the truth, and syncing again is
-//! always safe: see [`projection`](crate::share::projection).
+//! A sync pulls what the child wrote (messages, and receipts for Dad's),
+//! takes it into the vault, works out what the child's database is
+//! missing, writes it to the local replica, and pushes. The vault is the
+//! truth, and syncing again is always safe: see
+//! [`projection`](crate::share::projection).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -31,7 +33,7 @@ use crate::relay::RelayClient;
 use crate::share::replica::{self, Replica, TokenCell};
 use crate::share::{AccessKey, ChildKeys, ContentKey};
 use crate::store::Rekey;
-use crate::{Account, ChildId, ChildShare, Error, Result, Store};
+use crate::{Account, ChildId, ChildShare, Error, Result, Sender, Store};
 
 /// How many bytes of sealed images go into the replica before a push.
 /// Bounds memory on a first sync of many photos, and saves progress: an
@@ -42,13 +44,19 @@ const IMAGE_BATCH_BYTES: usize = 16 * 1024 * 1024;
 /// run out halfway through a push.
 const TOKEN_MARGIN_MS: i64 = 5 * 60 * 1000;
 
-/// What a sync sent.
+/// What a sync sent and received.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
     pub notes: usize,
     pub removed_notes: usize,
     pub images: usize,
     pub removed_images: usize,
+    /// Dad's messages that reached the cloud.
+    pub messages_sent: usize,
+    /// New messages from the child.
+    pub messages_received: usize,
+    /// Dad's messages the child read since the last sync.
+    pub receipts: usize,
 }
 
 impl SyncReport {
@@ -402,6 +410,12 @@ impl Worker {
     async fn new_key(&mut self, child: ChildId) -> Result<ChildShare> {
         let share = self.share(child).await?;
         let account = self.account_for(&share).await?;
+        // Messages the child sent under the old key can't be opened once the
+        // vault has only the new one: fetch them first, if the network lets.
+        // A new key may be urgent, so it doesn't wait for one.
+        if self.receive(&account, &share).await.is_err() {
+            self.replicas.remove(&child);
+        }
         let access_key = AccessKey::generate()?;
         let keys = ChildKeys::derive(&access_key)?;
         let content_key = ContentKey::generate()?;
@@ -485,20 +499,31 @@ impl Worker {
 
     async fn push_changes(&mut self, account: &Account, share: &ChildShare) -> Result<SyncReport> {
         let child = share.child_id;
-        self.open_replica(account, share).await?;
+        let mut report = SyncReport::default();
+        let received = self.receive(account, share).await?;
+        report.messages_received = received.messages;
+        report.receipts = received.receipts;
+
         let store = self.store.clone();
         let replica = &mut self
             .replicas
             .get_mut(&child)
-            .expect("opened just above")
+            .expect("opened by `receive`")
             .replica;
-
         replica
             .set_share_key(share.key_epoch, &share.wrapped_key)
             .await?;
-        let mut report = SyncReport::default();
+        // Dad's messages in the replica: once pushed, they're sent.
+        let mut in_share = HashSet::new();
         loop {
             let manifest = replica.manifest().await?;
+            in_share.extend(
+                manifest
+                    .messages
+                    .iter()
+                    .filter(|(_, version)| version.sender == Sender::Father)
+                    .map(|(id, _)| *id),
+            );
             let changes = store
                 .share_changes(child, manifest, IMAGE_BATCH_BYTES)
                 .await?;
@@ -507,15 +532,46 @@ impl Worker {
             report.removed_notes += changes.removed_notes.len();
             report.images += changes.blobs.len();
             report.removed_images += changes.removed_blobs.len();
+            in_share.extend(
+                changes
+                    .messages
+                    .iter()
+                    .filter(|message| message.sender == Sender::Father)
+                    .map(|message| message.id),
+            );
             // Push every batch, and push even when nothing changed: the
             // manifest describes the local replica, which is ahead of the
             // cloud if the last push failed. Turso remembers what it hasn't
             // sent yet, and sends only that.
             replica.push().await?;
             if !changes.more {
-                return Ok(report);
+                break;
             }
         }
+        report.messages_sent = store
+            .messages_sent(child, in_share, Timestamp::now())
+            .await?;
+        Ok(report)
+    }
+
+    /// Pulls `share`'s replica and takes in what the child wrote: their
+    /// new messages, and receipts for Dad's.
+    async fn receive(
+        &mut self,
+        account: &Account,
+        share: &ChildShare,
+    ) -> Result<crate::store::Received> {
+        let child = share.child_id;
+        self.open_replica(account, share).await?;
+        let replica = &self
+            .replicas
+            .get(&child)
+            .expect("opened just above")
+            .replica;
+        replica.pull().await?;
+        let messages = replica.sealed_messages(Some(Sender::Child)).await?;
+        let receipts = replica.receipts().await?;
+        self.store.receive(child, messages, receipts).await
     }
 
     /// Opens `share`'s replica if it isn't open, and makes sure its token

@@ -72,6 +72,11 @@ id_type!(
     /// Identifies an image attached to a note.
     ImageId
 );
+id_type!(
+    /// Identifies a message. Whoever writes it makes it, Dad's app or the
+    /// child's: the same id names it in the vault and in the share.
+    MessageId
+);
 
 /// A child the father writes about.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +193,93 @@ impl SharedNote {
             updated_at: self.updated_at,
         }
     }
+}
+
+/// Longest message, in characters.
+pub const MAX_MESSAGE_CHARS: usize = 4000;
+
+/// Who wrote a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Sender {
+    Father,
+    Child,
+}
+
+impl Sender {
+    /// As stored, in the vault and in the share.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Father => "father",
+            Self::Child => "child",
+        }
+    }
+}
+
+impl FromStr for Sender {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        [Self::Father, Self::Child]
+            .into_iter()
+            .find(|sender| sender.as_str() == s)
+            .ok_or_else(|| Error::Corrupt {
+                what: "message sender",
+                value: s.to_owned(),
+            })
+    }
+}
+
+/// A message between Dad and one child, as either side shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Message {
+    pub id: MessageId,
+    pub sender: Sender,
+    /// Plain text.
+    pub body: String,
+    pub created_at: Timestamp,
+    /// It's in the cloud. `false` while it waits for a push; always `true`
+    /// for a message from the other side.
+    pub sent: bool,
+    /// When its recipient read it.
+    pub read_at: Option<Timestamp>,
+}
+
+impl Message {
+    /// A message just written here, not sent yet: what the UI shows
+    /// before the store or the child's thread has replied. Its time is
+    /// now, to the millisecond, as the vault and the share store it.
+    pub fn draft(id: MessageId, sender: Sender, body: String) -> Self {
+        let now = Timestamp::now().as_millisecond();
+        Self {
+            id,
+            sender,
+            body,
+            created_at: Timestamp::from_millisecond(now).expect("now is a valid time"),
+            sent: false,
+            read_at: None,
+        }
+    }
+}
+
+/// A conversation as the list of them shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversationSummary {
+    /// The newest message.
+    pub last: Message,
+    /// Messages from the child the father hasn't read.
+    pub unread: usize,
+}
+
+/// Trims a message and checks it isn't empty or too long.
+pub fn clean_message(raw: &str) -> Result<String> {
+    let body = raw.trim();
+    if body.is_empty() {
+        return Err(Error::EmptyMessage);
+    }
+    if body.chars().count() > MAX_MESSAGE_CHARS {
+        return Err(Error::MessageTooLong);
+    }
+    Ok(body.to_owned())
 }
 
 /// The father's account on the relay, which sharing needs.
@@ -439,6 +531,25 @@ mod tests {
     fn label_names_drop_leading_hashes() {
         assert_eq!(clean_label_name(" #funny").unwrap(), "funny");
         assert_eq!(clean_label_name("##a#b").unwrap(), "a#b");
+    }
+
+    #[test]
+    fn messages_are_trimmed_and_limited_by_characters() {
+        assert_eq!(clean_message("  Hi Dad!\n").unwrap(), "Hi Dad!");
+        assert!(matches!(clean_message(" \n "), Err(Error::EmptyMessage)));
+        assert!(clean_message(&"é".repeat(MAX_MESSAGE_CHARS)).is_ok());
+        assert!(matches!(
+            clean_message(&"a".repeat(MAX_MESSAGE_CHARS + 1)),
+            Err(Error::MessageTooLong)
+        ));
+    }
+
+    #[test]
+    fn senders_round_trip_through_text() {
+        for sender in [Sender::Father, Sender::Child] {
+            assert_eq!(sender.as_str().parse::<Sender>().unwrap(), sender);
+        }
+        assert!("mother".parse::<Sender>().is_err());
     }
 
     #[test]

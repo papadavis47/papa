@@ -9,10 +9,13 @@
 //! `UnlockScreen` the password typed to unlock, `WelcomeScreen` the
 //! first-launch choice and a child's sign-in, `NoteEditor` the open
 //! note's text and its pending save, `NoteReader` the note a child reads,
-//! `Gallery` the note's images and `Lightbox` the one shown full size.
+//! `Gallery` the note's images, `Lightbox` the one shown full size, and
+//! `Conversation` the messages with one child and what's being typed.
 
 mod account_form;
 mod command_palette;
+mod conversation;
+mod conversation_list;
 pub mod dates;
 pub mod dialogs;
 mod empty_state;
@@ -32,6 +35,9 @@ mod welcome;
 
 pub use account_form::{AccountEntry, AccountForm, AccountPurpose};
 pub use command_palette::{COMMAND_PALETTE_CONTEXT, CommandPalette, CommandPaletteEvent};
+pub use conversation::{Conversation, ConversationEvent, unread_pill};
+pub use conversation_list::{ConversationEntry, ConversationList};
+pub use empty_state::EmptyState;
 pub use name_form::suggested_color;
 pub use note_editor::{NoteEditor, NoteEditorEvent};
 pub use note_list::{EmptyNotes, NOTE_SEARCH_CONTEXT, NoteList, NoteListEvent};
@@ -39,7 +45,7 @@ pub use note_reader::NoteReader;
 pub use note_view::NoteView;
 pub use password_form::{PasswordEntry, PasswordForm, PasswordPurpose};
 pub use share_dialog::{ShareDialog, ShareDialogEvent, ShareState};
-pub use sidebar::{AppSidebar, SidebarEvent};
+pub use sidebar::{AppSidebar, ChildSidebar, SidebarEvent};
 pub use title_bar::AppTitleBar;
 pub use unlock::{UnlockEvent, UnlockScreen};
 pub use welcome::{WelcomeEvent, WelcomeScreen};

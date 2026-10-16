@@ -268,17 +268,21 @@ cargo run -p papa-relay -- admin invite create "Me"           # prints an invite
 
 ## Sharing
 
-The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-projection.md)), the child's Phase 12 ([ADR 0016](adr/0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md)); messages come in Phase 13.
+The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-projection.md)), the child's Phase 12 ([ADR 0016](adr/0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md)), messages Phase 13 ([ADR 0017](adr/0017-messages-as-append-only-sealed-rows.md)).
 
 ```diagram
  UI thread ──▶ Sharing (papa-sharing thread, tokio with IO)
                  │ 1. relay: father token for the share (renewed before it expires)
+                 │ 1b. replica.pull(); store.receive(): the child's new messages
+                 │       (current epoch only) and receipts into the vault
                  │ 2. replica.manifest(): ids, versions, epochs ── shares/<child>.db
                  │ 3. store.share_changes(manifest) ──▶ papa-store thread:
-                 │       shared notes and images that differ, sealed with the content key
+                 │       shared notes, images and messages that differ, sealed with
+                 │       the content key; receipts for what Dad read
                  │ 4. replica.apply(changes) in one transaction
                  │ 5. replica.push() ──turso sync──▶ share database (local tursodb or Turso Cloud)
-                 └ repeat 2–5 while images remain (≈16 MB per batch)
+                 └ repeat 2–5 while images remain (≈16 MB per batch),
+                   then mark Dad's messages that reached the cloud as sent
 ```
 
 - **Keys** (`papa-core::share`): the access key `PAPA-…` (130 random bits and a checksum) → Argon2id → HKDF → `auth_key` for the relay and `enc_key` for the device. A random content key per share and epoch is wrapped under `enc_key` in the share's `share_key` row; notes and images are sealed with it (XChaCha20-Poly1305), each bound to its share, row and epoch through the associated data.
@@ -293,32 +297,39 @@ The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-p
  sign in: key card ──Argon2id/HKDF──▶ auth_key ──relay──▶ share id + token
           ──turso sync──▶ child/share.db (new replica) ──▶ decrypt ──▶ session.json saved
  open:    session.json ──▶ child/share.db, no network ──▶ decrypt the last pull
- pull:    token (renewed every 15 min) ──▶ replica.pull() ──▶ decrypt if anything changed
+ pull:    push what's waiting (messages, receipts) ──▶ token (renewed every 15 min)
+          ──▶ replica.pull() ──▶ decrypt if anything changed
+ send:    seal ──▶ child/outbox.json ──▶ insert into the replica ──▶ push (offline: waits)
 ```
 
 - **Decrypting** mirrors sealing: `enc_key` unwraps the newest `share_key`, which opens each row of that epoch. Rows of an older epoch wait for Dad's next sync. A key the relay accepts but that can't unwrap the share means Dad's app hasn't resealed yet: the app says it's waiting.
 - **A refused key:** after a failed pull, or one that brings a share the key can't open, the relay is asked again at once. If it refuses (a new key, or sharing stopped), the app says so and offers to sign in again.
 - **The key card** is the access key, plus `@server` unless the share is on Papa's own server: `PAPA-…@papa.example.org`. The father's sharing dialog shows and copies it.
 
-| Vault table (v4) | Columns |
+**Messages** (Phase 13, [ADR 0017](adr/0017-messages-as-append-only-sealed-rows.md)): append-only rows, each table with one writer: a `message` by its sender, a `receipt` by its recipient, so last-push-wins has nothing to settle. Each message is sealed with the content key, bound to its share, id, sender, time and epoch; only the current epoch counts on either side. Dad's vault keeps the conversation (`message`, v5); a new key reseals it. In the apps, `ui::Conversation` shows drafts at once and swaps in the stored message by id; both apps poll every 30 s, sync at once after sending, and mark a conversation read only while it's showing in the active window.
+
+| Vault table (v5) | Columns |
 |---|---|
 | `account` | `relay_url`, `email`, `session_token`, `expires_at`; one row |
 | `share` | `child_id`, `share_id`, `relay_url`, `database_url`, `access_key`, `content_key`, `wrapped_nonce`, `wrapped_key`, `key_epoch`, `auth_key_stale`, `created_at`, `last_synced_at` |
 | `note_share` | `note_id`, `child_id` (cascades from the share), `shared_at` |
+| `message` | `id`, `child_id` (cascades from the child, not the share), `sender`, `body`, `created_at`, `sent_at`, `read_at` |
 
-| Share database table | Columns (only ids, versions, epochs and sizes are readable) |
+| Share database table | Columns (only ids, versions, epochs, sizes, times and senders are readable) |
 |---|---|
 | `share_schema` | `version` |
 | `share_key` | `epoch`, `nonce`, `wrapped_key` |
 | `shared_note` | `id`, `updated_at`, `key_epoch`, `nonce`, `ciphertext` (title, body, dates, image ids) |
 | `shared_blob` | `id`, `kind` (`thumb` / `display`), `note_id`, `key_epoch`, `nonce`, `ciphertext` |
+| `message` | `id`, `sender`, `created_at`, `key_epoch`, `nonce`, `ciphertext` (the text); schema 2 |
+| `receipt` | `message_id`, `read_at` |
 
 ## Data flow
 
 1. The father's vault is a local Turso database. It is the source of truth and works offline.
 2. When a note is shared with a child, it is encrypted on the father's machine. It is then written to a local replica of that child's share database and pushed to the cloud. *(Phase 11.)*
-3. The child's app signs in through the relay (father's email + access key). It receives a read-only token scoped to its own database, pulls, and decrypts locally. *(Phase 12.)*
-4. Messages are append-only encrypted rows in the same share database. Both sides push and pull them. *(Phase 13.)*
+3. The child's app signs in through the relay (father's email + access key). It receives a token scoped to its own database, read-only except for adding messages and receipts, pulls, and decrypts locally. *(Phase 12.)*
+4. Messages are append-only encrypted rows in the same share database. Both sides push and pull them; the father's vault keeps the conversation. *(Phase 13.)*
 
 ## Threading
 
@@ -331,5 +342,5 @@ The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-p
 ## Security model
 
 - Optional encryption at rest for the local vault (Turso, AEGIS-256), with its key wrapped under the father's password (Argon2id + XChaCha20-Poly1305). Locking closes the vault and drops its key. Done in Phase 9; the rest is planned.
-- End-to-end encryption for everything in the cloud (XChaCha20-Poly1305, Phase 11). The relay and Turso only see ciphertext, ids, versions and timestamps. Keys for the cloud live in the vault, which is encrypted at rest when it has a password.
+- End-to-end encryption for everything in the cloud (XChaCha20-Poly1305, Phase 11). The relay and Turso only see ciphertext, ids, versions and timestamps, and who wrote each message. Keys for the cloud live in the vault, which is encrypted at rest when it has a password.
 - Tokens are short-lived (one hour) and scoped to a single database. No admin or Platform credentials ship in the app. The relay stores only hashes of passwords, session tokens, invite codes and child keys (Phase 10).

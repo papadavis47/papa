@@ -16,10 +16,14 @@
 //! the channel closes.
 
 mod db;
+mod messages;
 mod migrations;
 mod rekey;
 mod shares;
 
+pub(crate) use messages::Received;
+
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -27,10 +31,11 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::lock::{self, KeyFile, Password, VaultKey, VaultKind, key_path};
 use crate::share::projection::{Manifest, ShareChanges};
-use crate::share::{AccessKey, ContentKey, Sealed};
+use crate::share::{AccessKey, ContentKey, Sealed, SealedMessage};
 use crate::{
-    Account, Child, ChildDraft, ChildId, ChildShare, EncodedImage, Error, ImageId, Label, LabelId,
-    Note, NoteDraft, NoteId, NoteImage, NoteQuery, NoteSummary, PreparedImage, Result,
+    Account, Child, ChildDraft, ChildId, ChildShare, ConversationSummary, EncodedImage, Error,
+    ImageId, Label, LabelId, Message, MessageId, Note, NoteDraft, NoteId, NoteImage, NoteQuery,
+    NoteSummary, PreparedImage, Result,
 };
 use db::{Db, Location};
 
@@ -85,6 +90,17 @@ enum Request {
     ShareSynced(ChildId, jiff::Timestamp, Reply<()>),
     RemoveShare(ChildId, Reply<()>),
     ShareChanges(ChildId, Box<Manifest>, usize, Reply<ShareChanges>),
+    Messages(ChildId, Reply<Vec<Message>>),
+    AddMessage(ChildId, MessageId, String, Reply<Message>),
+    MarkRead(ChildId, Reply<usize>),
+    Conversations(Reply<HashMap<ChildId, ConversationSummary>>),
+    Receive(
+        ChildId,
+        Vec<SealedMessage>,
+        Vec<(MessageId, i64)>,
+        Reply<Received>,
+    ),
+    MessagesSent(ChildId, HashSet<MessageId>, jiff::Timestamp, Reply<usize>),
     IsEncrypted(Reply<bool>),
     SetPassword(Option<Password>, Password, Reply<()>),
     RemovePassword(Password, Reply<()>),
@@ -333,6 +349,59 @@ impl Store {
             .await
     }
 
+    // --- Messages ---
+
+    /// The conversation with `child`, oldest first.
+    pub async fn messages(&self, child: ChildId) -> Result<Vec<Message>> {
+        self.call(|reply| Request::Messages(child, reply)).await
+    }
+
+    /// Adds a message to `child`, with the id the UI gave it when it
+    /// showed it. It's sent with the next sync. Fails with
+    /// [`Error::NotShared`] unless sharing with the child is on.
+    pub async fn add_message(
+        &self,
+        child: ChildId,
+        id: MessageId,
+        body: impl Into<String>,
+    ) -> Result<Message> {
+        let body = body.into();
+        self.call(|reply| Request::AddMessage(child, id, body, reply))
+            .await
+    }
+
+    /// Marks every message from `child` read. Returns how many weren't:
+    /// their receipts go out with the next sync.
+    pub async fn mark_read(&self, child: ChildId) -> Result<usize> {
+        self.call(|reply| Request::MarkRead(child, reply)).await
+    }
+
+    /// Each conversation that has a message: its newest, and how many
+    /// from the child are unread.
+    pub async fn conversations(&self) -> Result<HashMap<ChildId, ConversationSummary>> {
+        self.call(Request::Conversations).await
+    }
+
+    pub(crate) async fn receive(
+        &self,
+        child: ChildId,
+        messages: Vec<SealedMessage>,
+        receipts: Vec<(MessageId, i64)>,
+    ) -> Result<Received> {
+        self.call(|reply| Request::Receive(child, messages, receipts, reply))
+            .await
+    }
+
+    pub(crate) async fn messages_sent(
+        &self,
+        child: ChildId,
+        in_share: HashSet<MessageId>,
+        at: jiff::Timestamp,
+    ) -> Result<usize> {
+        self.call(|reply| Request::MessagesSent(child, in_share, at, reply))
+            .await
+    }
+
     /// Whether the vault is encrypted with a password.
     pub async fn is_encrypted(&self) -> Result<bool> {
         self.call(Request::IsEncrypted).await
@@ -564,6 +633,24 @@ async fn handle(db: &mut Db, request: Request) {
         }
         Request::ShareChanges(child, manifest, budget, reply) => {
             let _ = reply.send(db.share_changes(child, &manifest, budget).await);
+        }
+        Request::Messages(child, reply) => {
+            let _ = reply.send(db.messages(child).await);
+        }
+        Request::AddMessage(child, id, body, reply) => {
+            let _ = reply.send(db.add_message(child, id, &body).await);
+        }
+        Request::MarkRead(child, reply) => {
+            let _ = reply.send(db.mark_read(child).await);
+        }
+        Request::Conversations(reply) => {
+            let _ = reply.send(db.conversations().await);
+        }
+        Request::Receive(child, messages, receipts, reply) => {
+            let _ = reply.send(db.receive(child, messages, receipts).await);
+        }
+        Request::MessagesSent(child, in_share, at, reply) => {
+            let _ = reply.send(db.messages_sent(child, &in_share, at).await);
         }
         Request::DeleteNote(id, reply) => {
             let _ = reply.send(db.delete_note(id).await);

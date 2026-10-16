@@ -125,6 +125,13 @@ impl PapaApp {
                 }
             }
             PaletteCommand::ShareChild(id) => self.open_share_dialog(id, window, cx),
+            PaletteCommand::Message(id) => {
+                self.note_list_focus.focus(window, cx);
+                self.select_conversation(Some(id), window, cx);
+                if let Some(conversation) = &self.conversation {
+                    conversation.update(cx, |conversation, cx| conversation.focus(window, cx));
+                }
+            }
             PaletteCommand::SignIn => self.sign_in(&SignIn, window, cx),
             PaletteCommand::SignOut => self.sign_out(&SignOut, window, cx),
             PaletteCommand::SyncNow => self.sync_now(&SyncNow, window, cx),

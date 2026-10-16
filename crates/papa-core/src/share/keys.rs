@@ -174,6 +174,16 @@ pub enum Aad<'a> {
         note: &'a str,
         epoch: i64,
     },
+    /// A message. Who wrote it and when are bound to it too, so the
+    /// server can't make Dad's message look like the child's, or move it
+    /// in the conversation.
+    Message {
+        share: &'a str,
+        message: &'a str,
+        sender: &'a str,
+        created_at: i64,
+        epoch: i64,
+    },
     /// One version of an image (`kind`: "thumb" or "display").
     Blob {
         share: &'a str,
@@ -185,8 +195,9 @@ pub enum Aad<'a> {
 
 impl Aad<'_> {
     fn bytes(self) -> Vec<u8> {
-        // Ids are UUIDs and kinds are fixed words, so none holds a newline
-        // and the fields can't run into each other.
+        // Ids are UUIDs, kinds and senders are fixed words, and the rest
+        // are numbers, so none holds a newline and the fields can't run
+        // into each other.
         match self {
             Self::ContentKey { share, epoch } => {
                 format!("papa share v1\ncontent key\n{share}\n{epoch}")
@@ -194,6 +205,15 @@ impl Aad<'_> {
             Self::Note { share, note, epoch } => {
                 format!("papa share v1\nnote\n{share}\n{note}\n{epoch}")
             }
+            Self::Message {
+                share,
+                message,
+                sender,
+                created_at,
+                epoch,
+            } => format!(
+                "papa share v1\nmessage\n{share}\n{message}\n{sender}\n{created_at}\n{epoch}"
+            ),
             Self::Blob {
                 share,
                 image,

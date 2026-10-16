@@ -10,6 +10,7 @@ use super::{
     AddImages, FocusSearch, NewNote, PapaApp, SEARCH_DELAY, SelectNextNote, SelectPreviousNote,
     TogglePreview,
 };
+use crate::state::Pane;
 use crate::ui::{NoteEditor, NoteEditorEvent, NoteListEvent};
 
 impl PapaApp {
@@ -108,7 +109,12 @@ impl PapaApp {
         self.move_note(-1, window, cx);
     }
 
+    /// ↑/↓ in the middle pane: through the notes, or the conversations.
     fn move_note(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pane == Pane::Messages {
+            self.move_conversation(delta, window, cx);
+            return;
+        }
         self.selection.move_note(delta, &self.note_ids());
         self.open_selected(window, cx);
         cx.notify();

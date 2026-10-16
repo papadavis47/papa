@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::lock::MIN_PASSWORD_CHARS;
-use crate::model::MAX_NAME_CHARS;
+use crate::model::{MAX_MESSAGE_CHARS, MAX_NAME_CHARS};
 
 /// Everything that can go wrong in `papa-core`.
 ///
@@ -17,6 +17,12 @@ pub enum Error {
 
     #[error("{0:#08x} isn't a colour; expected 0xRRGGBB")]
     InvalidColor(u32),
+
+    #[error("the message is empty")]
+    EmptyMessage,
+
+    #[error("a message can be at most {MAX_MESSAGE_CHARS} characters long")]
+    MessageTooLong,
 
     #[error("a label named “{0}” already exists")]
     DuplicateLabel(String),
@@ -175,6 +181,16 @@ pub enum Error {
     /// Sharing a note with a child it isn't about, or who isn't shared.
     #[error("the note can only be shared with a child it's about, once sharing with them is on")]
     CantShareNote,
+
+    /// Messages go to a child whose sharing is on: the share is how they
+    /// travel.
+    #[error("turn sharing on for {0} to send them messages")]
+    NotShared(String),
+
+    /// On the child's side: Dad's Papa hasn't made the share's message
+    /// tables yet (an older version), or his new key hasn't reached it.
+    #[error("messages open once Dad's Papa has synced; try again later")]
+    MessagesUnavailable,
 
     /// Turso's sync failed while pushing a share.
     #[error("couldn't sync the shared notes: {0}")]

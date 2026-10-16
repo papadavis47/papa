@@ -15,7 +15,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use super::Sealed;
-use crate::{EncodedImage, Error, ImageFormat, ImageId, NoteId, Result};
+use super::message::{MessageVersion, SealedMessage};
+use crate::{EncodedImage, Error, ImageFormat, ImageId, MessageId, NoteId, Result};
 
 /// Which version of an image a blob row holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -93,6 +94,10 @@ pub struct Manifest {
     pub notes: HashMap<NoteId, NoteVersion>,
     /// Each image version's key epoch.
     pub blobs: HashMap<(ImageId, BlobKind), i64>,
+    /// Every message, both ways.
+    pub messages: HashMap<MessageId, MessageVersion>,
+    /// Which messages were read, and when (Unix milliseconds).
+    pub receipts: HashMap<MessageId, i64>,
 }
 
 /// Which version of a note a row holds: the note's `updated_at` in the
@@ -110,6 +115,10 @@ pub struct ShareChanges {
     pub removed_notes: Vec<NoteId>,
     pub blobs: Vec<SealedBlob>,
     pub removed_blobs: Vec<(ImageId, BlobKind)>,
+    /// Dad's new messages, and every message sealed again after a new key.
+    pub messages: Vec<SealedMessage>,
+    /// The child's messages Dad read: (message, read at).
+    pub receipts: Vec<(MessageId, i64)>,
     /// Some images didn't fit in this batch: apply these changes, then ask
     /// again.
     pub more: bool,
@@ -121,6 +130,8 @@ impl ShareChanges {
             && self.removed_notes.is_empty()
             && self.blobs.is_empty()
             && self.removed_blobs.is_empty()
+            && self.messages.is_empty()
+            && self.receipts.is_empty()
     }
 }
 

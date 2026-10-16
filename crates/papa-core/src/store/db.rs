@@ -365,16 +365,16 @@ impl Db {
         })
     }
 
-    pub(super) async fn add_note(&mut self, draft: NoteDraft) -> Result<Note> {
+    pub(super) async fn add_note(&mut self, draft: NoteDraft, at: Timestamp) -> Result<Note> {
         let id = NoteId::new();
-        let now = Timestamp::now().as_millisecond();
+        let at = at.as_millisecond();
         // All or nothing: a failed link (say, to a child deleted meanwhile)
         // leaves no half-made note behind.
         let tx = self.conn.transaction().await?;
         tx.execute(
             "INSERT INTO note (id, title, body_md, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?4)",
-            (id.to_string(), draft.title.trim(), draft.body.as_str(), now),
+            (id.to_string(), draft.title.trim(), draft.body.as_str(), at),
         )
         .await?;
         set_links(&tx, &CHILD_LINKS, id, &draft.children).await?;

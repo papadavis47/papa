@@ -67,7 +67,7 @@ enum Request {
     DeleteLabel(LabelId, Reply<()>),
     Notes(NoteQuery, Reply<Vec<NoteSummary>>),
     Note(NoteId, Reply<Note>),
-    AddNote(NoteDraft, Reply<Note>),
+    AddNote(NoteDraft, jiff::Timestamp, Reply<Note>),
     UpdateNoteText(NoteId, String, String, Reply<Note>),
     SetNoteChildren(NoteId, Vec<ChildId>, Reply<Note>),
     SetNoteLabels(NoteId, Vec<LabelId>, Reply<Note>),
@@ -150,7 +150,7 @@ impl Store {
         Self::start(Location::File(path.to_owned()), unlock).await
     }
 
-    /// A throwaway vault in memory: for tests, and later for demo mode.
+    /// A throwaway vault in memory, for tests.
     pub async fn open_in_memory() -> Result<Self> {
         Self::start(Location::Memory, Unlock::Plain).await
     }
@@ -224,7 +224,13 @@ impl Store {
     }
 
     pub async fn add_note(&self, draft: NoteDraft) -> Result<Note> {
-        self.call(|reply| Request::AddNote(draft, reply)).await
+        self.add_note_at(draft, jiff::Timestamp::now()).await
+    }
+
+    /// Adds a note written at `at` rather than now. Only the demo vault
+    /// needs it ([`demo`](crate::demo)): its notes span a few years.
+    pub(crate) async fn add_note_at(&self, draft: NoteDraft, at: jiff::Timestamp) -> Result<Note> {
+        self.call(|reply| Request::AddNote(draft, at, reply)).await
     }
 
     /// Saves a note's title and body, and returns the note as stored.
@@ -576,8 +582,8 @@ async fn handle(db: &mut Db, request: Request) {
         Request::Note(id, reply) => {
             let _ = reply.send(db.note(id).await);
         }
-        Request::AddNote(draft, reply) => {
-            let _ = reply.send(db.add_note(draft).await);
+        Request::AddNote(draft, at, reply) => {
+            let _ = reply.send(db.add_note(draft, at).await);
         }
         Request::UpdateNoteText(id, title, body, reply) => {
             let _ = reply.send(db.update_note_text(id, &title, &body).await);

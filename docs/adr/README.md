@@ -21,5 +21,6 @@ Short records of significant decisions: the context, what we chose, and what it 
 | [0015](0015-sharing-keys-and-idempotent-projection.md) | Sharing: access keys, sealed rows, and a projection that is safe to repeat | Accepted |
 | [0016](0016-child-mode-as-a-type-and-the-replica-as-offline-cache.md) | Child mode: a mode is a type, the replica is the offline cache, and the server travels with the key | Accepted |
 | [0017](0017-messages-as-append-only-sealed-rows.md) | Messages: append-only sealed rows, current-key only, and polling | Accepted |
+| [0018](0018-packaging-with-cargo-packager.md) | Packaging: cargo-packager, a `dist` profile, and draft releases from tags | Proposed |
 
 Template: copy [0000-template.md](0000-template.md).

@@ -75,6 +75,19 @@ Settings live apart from the vault, in `~/.config/papa/settings.json` on Linux a
 PAPA_VAULT=/tmp/papa-dev.db PAPA_CONFIG_DIR=/tmp/papa-dev-config cargo run
 ```
 
+### Installable packages
+
+There are no releases yet. When there are, they'll be on the [releases page](https://github.com/papadavis47/papa/releases): a `.deb` and an AppImage for Linux, a `.dmg` for macOS on Apple silicon, and an installer and an MSI for Windows. To build them yourself, install [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) and run, on the system you're packaging for:
+
+```sh
+cargo install cargo-packager --version 0.11.8 --locked
+cargo packager -p papa --profile dist --formats deb,appimage   # Linux
+cargo packager -p papa --profile dist --formats app,dmg        # macOS
+cargo packager -p papa --profile dist --formats nsis,wix       # Windows
+```
+
+It builds Papa with the `dist` profile (smaller and faster than `--release`, but slower to build), then writes the packages to `target/packages/`. The macOS app is signed ad hoc, not with an Apple Developer ID, so macOS won't open a downloaded copy at first: open it once, then choose **Open Anyway** in System Settings → Privacy & Security. The Windows installers aren't signed either, so SmartScreen asks first. Pushing a `v*` tag builds all of them in CI and attaches them to a draft GitHub release ([release.yml](.github/workflows/release.yml), [ADR 0018](docs/adr/0018-packaging-with-cargo-packager.md)).
+
 ### The relay server
 
 `papa-relay` handles accounts, invites and access to shared notes. For development it runs against Turso's local sync server, so no cloud account is needed. You need the `tursodb` CLI ([Turso releases](https://github.com/tursodatabase/turso/releases), v0.8.2):

@@ -1,0 +1,147 @@
+name: Release
+
+# Builds the installable packages (ADR 0018).
+# - A `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`) builds them and
+#   attaches them to a draft GitHub release, to check and publish by hand.
+# - A pull request that touches packaging builds them too, as workflow
+#   artifacts only, so a broken package shows up before the next release.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - Cargo.toml
+      - crates/papa/Cargo.toml
+      - crates/papa/build.rs
+      - crates/papa/icons/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PACKAGER_VERSION: 0.11.8
+
+jobs:
+  package:
+    name: package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest Ubuntu runner, so the binary needs only glibc 2.35 and
+          # runs on Debian 12, Ubuntu 22.04, Fedora 36 and anything newer.
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            formats: deb,appimage
+          - name: macos-aarch64
+            os: macos-latest
+            formats: app,dmg
+          # An installer (NSIS) and an MSI (WiX). Neither is signed yet, so
+          # SmartScreen warns before running them.
+          - name: windows-x86_64
+            os: windows-latest
+            formats: nsis,wix
+    runs-on: ${{ matrix.os }}
+    # Bash on every OS, Windows included (its default is PowerShell).
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The oldest macOS the app claims to support (`minimum-system-version`).
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      # linuxdeploy is itself an AppImage; this runs it without FUSE.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "papa") | .version')
+          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "tag $GITHUB_REF_NAME doesn't match papa $version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Install Linux system libraries for GPUI
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential pkg-config libfontconfig-dev libfreetype-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libvulkan-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --version "$CARGO_PACKAGER_VERSION" --locked
+
+      - name: Build and package
+        run: cargo packager -p papa --profile dist --formats ${{ matrix.formats }}
+
+      - name: Check the packages
+        working-directory: target/packages
+        run: |
+          ls -la
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            dpkg-deb --info papa_*.deb
+            dpkg-deb --contents papa_*.deb
+            chmod +x papa_*.AppImage
+            ./papa_*.AppImage --appimage-extract >/dev/null
+            test -x squashfs-root/usr/bin/papa
+            test -f squashfs-root/papa.desktop
+            rm -rf squashfs-root
+          elif [[ "$RUNNER_OS" == macOS ]]; then
+            codesign --verify --deep --strict --verbose=2 Papa.app
+            plutil -p Papa.app/Contents/Info.plist
+            hdiutil verify Papa_*.dmg
+          else
+            test -f papa_*-setup.exe
+            test -f papa_*.msi
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papa-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            target/packages/*.deb
+            target/packages/*.AppImage
+            target/packages/*.dmg
+            target/packages/*-setup.exe
+            target/packages/*.msi
+
+  release:
+    name: draft release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * | tee SHA256SUMS
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft --generate-notes --title "Papa $GITHUB_REF_NAME"

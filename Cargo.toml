@@ -26,6 +26,20 @@ unsafe_code = "forbid"
 dbg_macro = "warn"
 todo = "warn"
 
+# What the packages are built with (`cargo build --profile dist`). `release`
+# is left as Cargo's default: optimised, no debug info, symbols kept.
+# - Thin LTO lets LLVM inline across crates. The code gets slightly bigger,
+#   not smaller, and the build takes about as long as `release`.
+# - No symbols either: they are 37 MB of a 155 MB binary, and a user never
+#   sees a backtrace. Build with `release` to debug a crash.
+# (`codegen-units = 1` would optimise a little further, but compiling
+# turso_core that way needs more memory than a 7 GB machine, such as GitHub's
+# macOS runner, has.)
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = true
+
 # Image codecs are pure Rust and painfully slow unoptimised: decoding one
 # phone photo takes seconds in a plain debug build. Optimising just these
 # crates keeps debug builds of our own code fast to compile.

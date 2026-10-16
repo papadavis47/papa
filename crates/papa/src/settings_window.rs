@@ -66,6 +66,7 @@ pub fn open(cx: &mut App) {
         window_bounds: Some(WindowBounds::centered(size(px(820.), px(600.)), cx)),
         window_min_size: Some(size(px(560.), px(400.))),
         window_decorations: Some(WindowDecorations::Client),
+        app_id: Some(crate::APP_ID.into()),
         ..TitleBar::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {

@@ -49,6 +49,10 @@ jobs:
             os: windows-latest
             formats: nsis,wix
     runs-on: ${{ matrix.os }}
+    # Bash on every OS, Windows included (its default is PowerShell).
+    defaults:
+      run:
+        shell: bash
     env:
       # The oldest macOS the app claims to support (`minimum-system-version`).
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -59,7 +63,6 @@ jobs:
 
       - name: Check the tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
         run: |
           version=$(cargo metadata --no-deps --format-version 1 |
             jq -r '.packages[] | select(.name == "papa") | .version')
@@ -89,7 +92,6 @@ jobs:
         run: cargo packager -p papa --profile dist --formats ${{ matrix.formats }}
 
       - name: Check the packages
-        shell: bash
         working-directory: target/packages
         run: |
           ls -la

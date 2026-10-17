@@ -356,13 +356,14 @@ Phases 0–9 give a complete, useful, **offline** app before any cloud work star
 ---
 
 ## 11. Portfolio practices (from Phase 0 onwards)
-- **README:** what Papa is, screenshots, the architecture diagram, how to build, and a "what I learned" section.
+- **README:** what Papa is, screenshots, the architecture diagram, how to build, and a "technical highlights" section.
 - **`docs/adr/`:** short Architecture Decision Records for the big choices in section 2 (Turso, one database per child, end-to-end encryption, Typst, invite-only relay). Interviewers love these, and they record *why*, not just *what*.
 - **`docs/architecture.md`:** crates, data flow, the threading model and the security model.
 - **CI badges:** build, clippy (`-D warnings`), `cargo fmt --check` and tests on Linux and macOS.
 - **Tests where they count:** `papa-core` (store, crypto round-trips, share projection), the Vim parser, and relay API integration tests.
 - **Commits:** small and readable, one feature per branch, PRs with a description even when working solo.
 - **Demo mode:** `papa --demo` loads sample children and notes, so screenshots never contain real family data.
+  - As built in Phase 15 ([ADR 0019](docs/adr/0019-demo-mode-as-a-fresh-throwaway-vault.md)): a fresh vault in the temporary folder on every launch, with its own settings. Three invented children, sixteen notes dated back from today, and four generated illustrations compiled into the binary.
 - **Releases:** tagged versions with Linux and macOS downloads (Phase 14).
 
 ---

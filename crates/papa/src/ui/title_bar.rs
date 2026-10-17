@@ -3,6 +3,7 @@ use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
+    tag::Tag,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{App, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, div};
@@ -13,7 +14,7 @@ use crate::app::{
 };
 
 /// The custom title bar. The app's name and the theme toggle are always
-/// there; the rest depends on the mode:
+/// there, and a "Demo" tag in `papa --demo`; the rest depends on the mode:
 ///
 /// - **Father:** the sidebar toggle on the left; the command palette and
 ///   the lock on the right. While the vault is locked, neither shows.
@@ -107,7 +108,10 @@ impl RenderOnce for AppTitleBar {
                                     }),
                             )
                         })
-                        .child(div().text_sm().font_semibold().child("Papa")),
+                        .child(div().text_sm().font_semibold().child("Papa"))
+                        .when(papa_core::paths::demo_dir().is_some(), |this| {
+                            this.child(Tag::info().small().child("Demo"))
+                        }),
                 )
                 .child(
                     h_flex()

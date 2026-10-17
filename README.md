@@ -5,41 +5,97 @@
 
 A private, local-first journal for fathers. Keep a profile for each of your children, write notes and save photos about them, and, if you choose, share some of those notes with a child, who can read them in the same app, export them to PDF and message you back.
 
+Built in Rust with [GPUI](https://www.gpui.rs), the GPU-accelerated UI framework behind the Zed editor, and [Turso](https://turso.tech) for local storage and sync.
+
+![A tour of Papa: browsing notes, finding one with the command palette, writing a new note in Markdown, and switching to the dark theme](docs/media/tour.gif)
+
+<sub>The tour as an [MP4](docs/media/tour.mp4). Everything shown is the demo's invented family (`papa --demo`), not real data.</sub>
+
 > **Status:** early development, built in public. Phases 0–14 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode, PDF export, vault lock and backup, the relay server, sharing notes from the father's side, child mode for reading them, messages between father and child, and installable packages for Linux, macOS and Windows) are done. See [PLAN.md](PLAN.md) for the roadmap.
 
-## Planned features
+## Try it
 
-- Profiles for each child; Markdown and image notes; your own labels; assign a note to one or more children
-- Local-first storage with [Turso](https://turso.tech), fully usable offline
-- Optional end-to-end encrypted sharing: each child sees **only** the notes shared with them
-- Messages between father and child
-- PDF export: one note, the notes a label or search picks out, or a child's whole book with a title page and contents, typeset with [Typst](https://typst.app)
-- Themes, a settings panel (fonts, text size, density) and an optional Vim mode (Normal, Insert and Visual modes, counts and operators, `:w`)
-- Keyboard first: a ⌘K command palette reaches every command, child, label and note
-- Linux and macOS first, Windows later
+With a [Rust toolchain](https://rustup.rs) and the [system libraries](#building) installed:
 
-## Built with
+```sh
+git clone https://github.com/papadavis47/papa.git
+cd papa
+cargo run --release -- --demo
+```
 
-- **Rust** (edition 2024)
-- **[GPUI](https://www.gpui.rs)** via **[gpui-kit](https://gpui-kit.com)**, a GPU-accelerated UI framework and component library
-- **[Turso](https://turso.tech)**, the Rust rewrite of SQLite, for local storage and sync
-- **[Typst](https://typst.app)**, run in-process as a library, for PDF export
+`--demo` opens a vault made up for the occasion: three children, sixteen notes over three years, a few photos. It's rebuilt from scratch every time and lives in your temporary folder, so your own vault and settings are never touched. Try ⌘K (Ctrl+K on Linux and Windows) to find anything, ⌘N for a new note, ⌘E to switch between Markdown and preview, ⌘⇧P to export a child's book to PDF, and ⌘⇧L for the dark theme.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![All notes, with a note about learning to ride a bike open in preview, and its photo below](docs/media/main-light.png) | ![Maya's notes in the dark theme, with a note that has headings and lists](docs/media/maya-dark.png) |
+| **All notes.** Children and labels in the sidebar, the notes in a virtualized list, the open note rendered from Markdown with its photos. | **One child's notes**, in the dark theme. |
+| ![The command palette, searching for Maya, offering to export her book, go to her notes, or open notes about her](docs/media/palette-dark.png) | ![The same note in Edit mode, showing its Markdown source](docs/media/editor-dark.png) |
+| **The ⌘K palette** reaches every command, child, label and note. | **Notes are Markdown**, written in Papa's editor (with an optional Vim mode). |
+
+![Three pages of Maya's book as a PDF: a title page, a page of notes, and a page with a photo of a sandcastle](docs/media/pdf-book.png)
+
+<p align="center"><sub><strong>A child's book as a PDF</strong>, typeset in-process with Typst: title page, contents, then every note about them, oldest first, with photos.</sub></p>
+
+## Features
+
+- **Profiles for each child**, notes in Markdown with photos, your own labels, and notes about one child or several
+- **Local-first:** the vault is a [Turso](https://turso.tech) database on your computer and works fully offline
+- **Optional end-to-end encrypted sharing:** each child sees **only** the notes shared with them, in the same app, and can read them offline
+- **Messages** between father and child, with read receipts
+- **PDF export:** one note, the notes a label or search picks out, or a child's whole book with a title page and contents, typeset with [Typst](https://typst.app)
+- **Privacy:** an optional password encrypts the vault on disk, with auto-lock and one-file backups
+- **Keyboard first:** a ⌘K command palette, shortcuts for every pane, and an optional Vim mode (Normal, Insert and Visual modes, counts and operators, `:w`)
+- **Themes** with light and dark variants, your own theme files (reloaded as you edit them), and settings for fonts, text size and density
+- **Installable** on Linux (`.deb`, AppImage), macOS (`.dmg`) and Windows (installer, MSI)
+
+## How it's built
+
+```
+┌─ papa (desktop app) ─────────────┐        ┌─ papa-relay (server) ────────┐
+│ GPUI views via gpui-kit          │ HTTPS  │ axum: accounts, invites,     │
+│ actions · key contexts · Vim     │───────▶│ one database per child,      │
+├──────────────────────────────────┤        │ one-hour scoped tokens       │
+│ papa-core                        │        └──────────────────────────────┘
+│ Store: Turso vault on its own    │
+│ thread · crypto · share sync     │  turso sync   ┌─ share database ─────────┐
+│ papa-pdf: Markdown → Typst → PDF │──────────────▶│ per child, ciphertext    │
+└──────────────────────────────────┘               └──────────────────────────┘
+```
+
+- **Rust** (edition 2024) in a Cargo workspace of five crates. Only the app crate knows about the UI; storage, crypto and sync live in `papa-core`, which is tested without a window.
+- **[GPUI](https://www.gpui.rs)** via **[gpui-kit](https://gpui-kit.com)** for the interface: entities and components, actions bound to keys, and a headless test window for UI tests.
+- **[Turso](https://turso.tech)**, the Rust rewrite of SQLite, for the vault (with encryption at rest) and for syncing each child's share database.
+- **[Typst](https://typst.app)**, run as a library, for PDFs.
+- **Cryptography:** Argon2id, HKDF and XChaCha20-Poly1305 from the RustCrypto crates. The server only ever stores ciphertext.
+
+More detail: [docs/architecture.md](docs/architecture.md) (crates, threading, storage, sharing and the security model) and the [decision records](docs/adr/), which say *why* each big choice was made.
+
+### Technical highlights
+
+What the [phases in PLAN.md](PLAN.md#8-phases--one-step-at-a-time) put into practice:
+
+- **Rust itself:** ownership across threads (a database actor behind a cloneable channel handle), `async` with two executors (GPUI's and tokio's), errors with `thiserror` and `anyhow`, enums that make wrong states unrepresentable (father mode and child mode are separate types), and test-driven state machines (the Vim parser).
+- **GPUI:** entities vs. components, subscriptions and events, actions and key contexts, background tasks, virtualized lists, animation, and testing views in a headless window.
+- **Turso:** an embedded database with migrations, encryption at rest, the Platform API for a database per tenant, and offline-first replicas that push and pull.
+- **Security:** deriving keys from passwords and access keys, authenticated encryption bound to where each row belongs, and a sync design that's safe to repeat.
+- **Shipping:** a small axum server, CI on Linux and macOS, cross-platform packages, and keeping a public repository free of secrets and real family data.
 
 ## Repository layout
 
 ```
 crates/
 ├── papa/        desktop app (the only crate that depends on gpui-kit)
-├── papa-core/   domain logic: models, Turso storage, crypto, sharing
+├── papa-core/   domain logic: models, Turso storage, crypto, sharing, the demo vault
 ├── papa-proto/  API types shared by the app and the relay
 ├── papa-pdf/    Markdown → PDF export
 └── papa-relay/  small server: accounts, invites, scoped tokens
 docs/
 ├── architecture.md
-└── adr/         architecture decision records
+├── adr/         architecture decision records
+└── media/       the screenshots and tour above
 ```
-
-More detail: [docs/architecture.md](docs/architecture.md) and the [decision records](docs/adr/).
 
 ## Building
 
@@ -62,6 +118,28 @@ cargo test --workspace          # run all tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
+
+### Running the demo in development
+
+The [demo](#try-it) runs from a normal debug build. Everything after `--` goes to Papa rather than to Cargo:
+
+```sh
+cargo run -- --demo             # debug build: quick to compile
+cargo run --release -- --demo   # optimised: slower to build, smoother to use
+./target/debug/papa --demo      # the binary the first command built, without Cargo
+cargo run -- --help             # Papa's options
+```
+
+Each run deletes the last demo and builds a new one in `papa-demo` in your temporary folder (`/tmp/papa-demo` on Linux, under `$TMPDIR` on macOS). Its settings live there too, so switching themes or turning on Vim mode in the demo doesn't change your own. To start over, quit and run it again. Its tests, and the command line's:
+
+```sh
+cargo test -p papa-core demo
+cargo test -p papa cli
+```
+
+The sample notes are in [`crates/papa-core/src/demo.rs`](crates/papa-core/src/demo.rs) and their photos in `crates/papa-core/demo/`. Edit either and the next `cargo run -- --demo` uses them.
+
+### Your own vault in development
 
 The app keeps its vault in your OS data directory (`~/.local/share/papa/vault.db` on Linux, `~/Library/Application Support/papa/vault.db` on macOS). To try things out without touching it, point `PAPA_VAULT` at another file:
 
@@ -129,7 +207,7 @@ Some tests start `tursodb` to sync for real. They look for it on the `PATH` (or 
 
 ## Privacy
 
-Real vaults live in your operating system's app-data directory, never in this repository. A vault can be locked with a password, which encrypts it on disk (Settings → Privacy); without the password the file is unreadable, and a forgotten password can't be recovered. Settings → Data → Back up saves the whole vault as one file to keep elsewhere. Anything shared through the cloud is encrypted on your device first, so the server only ever stores ciphertext: never a note's text, its labels, or which children it's about. Screenshots and test data use invented children and notes.
+Real vaults live in your operating system's app-data directory, never in this repository. A vault can be locked with a password, which encrypts it on disk (Settings → Privacy); without the password the file is unreadable, and a forgotten password can't be recovered. Settings → Data → Back up saves the whole vault as one file to keep elsewhere. Anything shared through the cloud is encrypted on your device first, so the server only ever stores ciphertext: never a note's text, its labels, or which children it's about. Screenshots, the tour and test data use invented children and notes: the screenshots come from `papa --demo`, and its photos are illustrations made for it.
 
 ## License
 

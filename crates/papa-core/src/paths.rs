@@ -3,6 +3,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::{Error, Result};
 
@@ -10,11 +11,39 @@ use crate::{Error, Result};
 /// real vault is never touched: `PAPA_VAULT=/tmp/papa-dev.db cargo run`.
 pub const VAULT_ENV: &str = "PAPA_VAULT";
 
-/// The vault file to open: `$PAPA_VAULT` if set, otherwise `vault.db` in a
-/// `papa` folder under the OS data directory (`~/.local/share` on Linux,
-/// `~/Library/Application Support` on macOS).
+/// The demo's folder, once `papa --demo` has made it ([`use_demo_dir`]).
+///
+/// A `OnceLock` is a static that can be set once, at run time, and then
+/// read from any thread without a lock. Setting `PAPA_VAULT` instead would
+/// need `std::env::set_var`, which is `unsafe` in Rust 2024: another
+/// thread could be reading the environment at the same moment.
+static DEMO_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Puts the vault, the settings and everything next to them in `dir`, the
+/// demo's folder ([`demo`](crate::demo)), for the rest of the process. It
+/// wins over [`VAULT_ENV`] and [`CONFIG_ENV`]. Only the first call counts.
+pub fn use_demo_dir(dir: PathBuf) {
+    let _ = DEMO_DIR.set(dir);
+}
+
+/// The demo's folder, if this is `papa --demo`.
+pub fn demo_dir() -> Option<&'static Path> {
+    DEMO_DIR.get().map(PathBuf::as_path)
+}
+
+/// The vault file to open: in a demo, the demo's; otherwise `$PAPA_VAULT`
+/// if set, or `vault.db` in a `papa` folder under the OS data directory
+/// (`~/.local/share` on Linux, `~/Library/Application Support` on macOS).
 pub fn vault_path() -> Result<PathBuf> {
+    if let Some(dir) = demo_dir() {
+        return Ok(demo_vault(dir));
+    }
     choose_vault_path(std::env::var_os(VAULT_ENV), dirs::data_dir())
+}
+
+/// The vault in a demo folder.
+pub(crate) fn demo_vault(dir: &Path) -> PathBuf {
+    dir.join("vault.db")
 }
 
 /// Where the replicas of shared children's databases live: `shares/` next
@@ -43,10 +72,14 @@ pub fn child_dir(vault: &Path) -> PathBuf {
 /// Like [`VAULT_ENV`], it keeps development away from the real settings.
 pub const CONFIG_ENV: &str = "PAPA_CONFIG_DIR";
 
-/// The folder for settings and user themes: `$PAPA_CONFIG_DIR` if set,
-/// otherwise `papa` under the OS config folder (`~/.config` on Linux,
-/// `~/Library/Application Support` on macOS).
+/// The folder for settings and user themes: in a demo, `config` in the
+/// demo's folder; otherwise `$PAPA_CONFIG_DIR` if set, or `papa` under the
+/// OS config folder (`~/.config` on Linux, `~/Library/Application Support`
+/// on macOS).
 pub fn config_dir() -> Result<PathBuf> {
+    if let Some(dir) = demo_dir() {
+        return Ok(dir.join("config"));
+    }
     choose_config_dir(std::env::var_os(CONFIG_ENV), dirs::config_dir())
 }
 

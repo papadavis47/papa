@@ -2,6 +2,48 @@
 
 This is the living overview of how Papa fits together. [PLAN.md](../PLAN.md) has the full design and roadmap. The *why* behind each major choice is in the [decision records](adr/).
 
+## At a glance
+
+Papa is a desktop app in Rust. A father keeps a journal about his children in a local database, the **vault**, which works entirely offline. If he chooses, some notes are encrypted on his computer and synced through the cloud to one child, who reads them in the same app and can write back.
+
+```diagram
+ Dad's computer                                         A child's computer
+┌───────────────────────────────────┐                  ┌──────────────────────────────┐
+│ papa (father mode)                │                  │ papa (child mode)            │
+│  GPUI views ──▶ Store ──▶ vault.db│                  │  GPUI views ──▶ ChildSession │
+│        │      (actor thread)      │                  │        (actor thread)        │
+│        └────▶ Sharing ──▶ shares/ │                  │   child/share.db (replica,   │
+│               (actor thread)  │   │                  │   ciphertext) ──▶ decrypt    │
+└───────────────────────────────┼───┘                  └──────────────┬───────────────┘
+                 seal, then push│      ┌────────────────────┐         │pull, then open
+                                └─────▶│ one share database │◀────────┘
+                                       │ per child (Turso), │
+                                       │ ciphertext only    │
+                                       └────────▲───────────┘
+                   accounts, invites,           │ provisions, mints
+                   short-lived tokens   ┌───────┴──────────┐  one-hour tokens
+      both apps ──────HTTPS───────────▶ │ papa-relay (axum)│
+                                        └──────────────────┘
+```
+
+- **Local-first.** The vault is the source of truth. Everything except sharing and messages works with no network and no account.
+- **One UI thread, several actor threads.** GPUI owns the UI thread. The database and each sync engine run on threads of their own, behind cheap, cloneable handles whose `async` methods send a request and await the reply (see [Threading](#threading)).
+- **End-to-end encryption.** The relay and Turso only ever store ciphertext, ids and timestamps (see [Security model](#security-model)).
+
+### Where to start reading
+
+| To see… | Read |
+|---|---|
+| how the app starts, and `--demo` | `crates/papa/src/main.rs`, `cli.rs`, `mode.rs` |
+| the father's window and its state | `crates/papa/src/app.rs` and `app/` (one file per pane or feature) |
+| a GPUI component | `crates/papa/src/ui/note_list.rs` (`RenderOnce`), `ui/note_editor.rs` (an entity with events) |
+| a state machine tested without a window | `crates/papa/src/vim/` |
+| the database actor | `crates/papa-core/src/store/mod.rs` (the handle), `store/db.rs` (all the SQL) |
+| the cryptography | `crates/papa-core/src/share/keys.rs`, `lock.rs` |
+| the share projection | `crates/papa-core/src/sharing.rs`, `share/projection.rs` |
+| Markdown → Typst → PDF | `crates/papa-pdf/src/markdown.rs`, `book.typ` |
+| the server | `crates/papa-relay/src/api.rs` |
+
 ## Crates
 
 ```
@@ -40,7 +82,7 @@ The father's mode:
 │       labels,                                                      │
 │       notes (the list), Selection (filter + open note), search box │
 │                                                                    │
-│ AppTitleBar ── sidebar toggle · "Papa" · ⌘K search · theme toggle   │
+│ AppTitleBar ── sidebar toggle · "Papa" (+ Demo) · ⌘K · theme toggle │
 │ h_resizable ┬─ AppSidebar   key context "Sidebar"                  │
 │             │               All notes, children, labels (click to  │
 │             │               filter; right-click: edit, delete)     │
@@ -77,7 +119,7 @@ The father's mode:
           (bundled + themes folder)                  reads Theme)
 ```
 
-- **State lives in entities, presentation in components.** `PapaApp` owns the app's state. Its methods are split by pane: `app/sidebar.rs` and `app/notes.rs`. The pieces in `crates/papa/src/ui/` are mostly `RenderOnce` components: built each frame from data passed in, consumed when rendered. They report clicks back through callbacks the parent creates with `cx.listener`. Two entities have state of their own:
+- **State lives in entities, presentation in components.** `PapaApp` owns the app's state. Its methods are split by pane: `app/sidebar.rs` and `app/notes.rs`. The pieces in `crates/papa/src/ui/` are mostly `RenderOnce` components: built each frame from data passed in, consumed when rendered. They report clicks back through callbacks the parent creates with `cx.listener`. A few entities have state of their own:
   - `NameForm` holds a dialog's half-typed input for as long as the dialog is open.
   - `NoteEditor` holds the open note, its text fields and its pending save.
   - `Gallery` holds the open note's images and the ones still being added.
@@ -176,6 +218,28 @@ The father's mode:
 | Your themes | `themes/` next to `settings.json` | `PAPA_CONFIG_DIR` |
 | Share replicas (ciphertext only) | `shares/<child id>.db` next to the vault | `PAPA_VAULT` |
 | A child's sign-in and replica | `child/session.json` and `child/share.db` next to where the vault would be | `PAPA_VAULT` |
+
+`papa --demo` puts all of these in a fresh `papa-demo` folder in the system's temporary folder instead, and ignores both variables (see [Demo mode](#demo-mode)).
+
+## Demo mode
+
+`papa --demo` opens an invented family: three children, five labels, sixteen notes over three years and four illustrations. It exists so the app can be tried, and screenshots taken, without real family data ([ADR 0019](adr/0019-demo-mode-as-a-fresh-throwaway-vault.md)).
+
+```diagram
+ main ── cli::parse ── --demo ──▶ demo::create(<temp>/papa-demo)
+                                    ├─ delete what the last demo left
+                                    ├─ Store::open ─ add children, labels,
+                                    │  notes (dated back from today), photos
+                                    └─ Store::close
+                                  paths::use_demo_dir(...)   OnceLock: vault and
+                                                             settings now live there
+ gpui_kit::application().run(...)  ── the app as usual, with a "Demo" tag
+```
+
+- **The real app, a throwaway vault.** Seeding goes through `Store`'s public API, plus a crate-private `add_note_at` for the dates, and then the window opens the vault like any other. Locking, backups, PDF export and themes all work. The next `--demo` starts again from scratch.
+- **Nothing reaches the father's files.** `paths::vault_path` and `paths::config_dir` check the demo's `OnceLock` before `PAPA_VAULT` and `PAPA_CONFIG_DIR`, and everything else (shares, the child folder, themes) is found from those two.
+- **Built in.** The sample notes are Rust constants in `papa-core/src/demo.rs`, and the photos are compiled in with `include_bytes!`, so an installed package can run the demo too.
+- **Offline.** Sharing and messages need a relay account, so the demo has neither.
 
 ## Local storage
 
@@ -327,9 +391,9 @@ The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-p
 ## Data flow
 
 1. The father's vault is a local Turso database. It is the source of truth and works offline.
-2. When a note is shared with a child, it is encrypted on the father's machine. It is then written to a local replica of that child's share database and pushed to the cloud. *(Phase 11.)*
-3. The child's app signs in through the relay (father's email + access key). It receives a token scoped to its own database, read-only except for adding messages and receipts, pulls, and decrypts locally. *(Phase 12.)*
-4. Messages are append-only encrypted rows in the same share database. Both sides push and pull them; the father's vault keeps the conversation. *(Phase 13.)*
+2. When a note is shared with a child, it is encrypted on the father's machine. It is then written to a local replica of that child's share database and pushed to the cloud (Phase 11).
+3. The child's app signs in through the relay with the father's email and an access key. It gets a token scoped to its own database, read-only except for adding messages and receipts, then pulls and decrypts locally (Phase 12).
+4. Messages are append-only encrypted rows in the same share database. Both sides push and pull them, and the father's vault keeps the conversation (Phase 13).
 
 ## Threading
 
@@ -341,9 +405,28 @@ The father's side is Phase 11 ([ADR 0015](adr/0015-sharing-keys-and-idempotent-p
 
 ## Security model
 
-- Optional encryption at rest for the local vault (Turso, AEGIS-256), with its key wrapped under the father's password (Argon2id + XChaCha20-Poly1305). Locking closes the vault and drops its key. Done in Phase 9; the rest is planned.
-- End-to-end encryption for everything in the cloud (XChaCha20-Poly1305, Phase 11). The relay and Turso only see ciphertext, ids, versions and timestamps, and who wrote each message. Keys for the cloud live in the vault, which is encrypted at rest when it has a password.
-- Tokens are short-lived (one hour) and scoped to a single database. No admin or Platform credentials ship in the app. The relay stores only hashes of passwords, session tokens, invite codes and child keys (Phase 10).
+| Who | Can see | Can't see |
+|---|---|---|
+| Anyone with the father's computer, vault unlocked | everything | — |
+| Anyone with the vault file, password set | that it's an encrypted database, and its size | any note, name or photo (AEGIS-256 pages; the key is wrapped under the password) |
+| The relay | father emails, which shares exist, hashes of passwords, tokens, invite codes and child keys | anything in a share |
+| Turso, or anyone with a share database | row ids, versions, key epochs, sizes, times, who sent each message | notes, photos, labels, which children a note is about, message text |
+| A child | the notes shared with them, and their conversation | other notes, other children, labels |
+
+- **At rest** (optional, Phase 9): Turso encrypts the vault's pages with AEGIS-256 under a random vault key, which Argon2id (64 MiB, 3 passes) and XChaCha20-Poly1305 wrap under the father's password. Locking closes the vault and drops its key. A forgotten password can't be recovered.
+- **In the cloud** (Phase 11): every note, photo and message is sealed with XChaCha20-Poly1305 under a content key per share and key epoch, bound to its share, row and epoch, so a row moved elsewhere fails to open. The content key is wrapped under a key derived from the child's access key, which never leaves the two apps. The keys for the cloud live in the vault, encrypted at rest when it has a password.
+- **Tokens** are short-lived (one hour) and scoped to a single database. No admin or Platform credentials ship in the app (Phase 10).
+- **Secrets in memory** live in `Zeroizing`/`ZeroizeOnDrop` types and are overwritten when dropped.
+- **Not covered yet:** the OS keychain (a child's sign-in is a file readable only by their user account), and code signing (the macOS app is signed ad hoc, the Windows installers not at all).
+
+## Testing
+
+About 270 tests, run in CI on Linux and macOS with `clippy -D warnings` and `fmt --check`:
+
+- **papa-core:** the store against real Turso databases (temporary files or in memory), migrations, encryption and rekeying, backups, crypto round trips, the share projection, and the demo vault. `tests/sharing.rs`, `child_mode.rs` and `messages.rs` run the father's app, a child's and an in-process relay against a real `tursodb` sync server.
+- **papa:** plain-Rust logic (selection, the palette's rows, export names, the command line, the Vim parser and motions), and UI tests that render real components in gpui-kit's headless test window, press keys, and check state and focus.
+- **papa-pdf:** Markdown to Typst markup (text prints exactly as typed, never as markup), and laid-out books checked for their cover, contents, pages and photos.
+- **papa-relay:** the HTTP API end to end: invites, sessions, fathers kept out of each other's shares, rate limits, both provisioning backends and the admin socket.
 
 ## Packaging
 

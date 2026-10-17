@@ -16,9 +16,11 @@
 //!   signing in with Dad's email and a key, pulling, decrypting, and
 //!   writing to Dad.
 //! - [`relay`]: the relay's HTTP API.
+//! - [`demo`]: the invented family behind `papa --demo`.
 
 pub mod backup;
 mod child_session;
+pub mod demo;
 mod error;
 mod files;
 pub mod images;

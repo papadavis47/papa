@@ -2,7 +2,7 @@
 
 A private, local-first journal for fathers. A father keeps a profile for each of his children and writes notes about them. He can choose to share some notes with a child, who opens them in the same app. Father and child can message each other.
 
-> Status: **agreed**. Open: the father's cloud backup design (section 10). Phases 0–14 are done.
+> Status: **agreed**. Open: the father's cloud backup design (section 10). Phases 0–15 are done.
 
 ---
 
@@ -306,7 +306,7 @@ Each phase ends with something runnable. Each one has a short "what you'll learn
 | 12 ✅ | **Child mode** | Onboarding choice, sign in, pull + decrypt, read-only UI, PDF export | the app's two "modes" as types, offline caching |
 | 13 ✅ | **Messaging** | Chat per child both ways, polling, unread badges, read receipts | append-only sync, optimistic UI |
 | 14 ✅ | **Packaging** | `cargo-packager`: `.deb` + AppImage for Linux, `.app` + `.dmg` for macOS (signing/notarization when you have a dev account), Windows installer + MSI; draft releases from tags ([ADR 0018](docs/adr/0018-packaging-with-cargo-packager.md)) | release profiles, bundling assets, CI releases |
-| 15 | **Showcase** | `papa --demo` with sample data (no real family data in screenshots), screenshots + short video, polished README, architecture write-up, downloadable releases | presenting technical work |
+| 15 ✅ | **Showcase** | `papa --demo` with sample data (no real family data in screenshots), screenshots + short video, polished README, architecture write-up ([ADR 0019](docs/adr/0019-demo-mode-as-a-fresh-throwaway-vault.md)); downloadable releases are ready to go but deferred: the first `v*` tag is still to come | presenting technical work |
 
 Phases 0–9 give a complete, useful, **offline** app before any cloud work starts. Cloud work (10–13) can slip without blocking anything else.
 

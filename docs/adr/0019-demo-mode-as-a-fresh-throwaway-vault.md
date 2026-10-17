@@ -1,6 +1,6 @@
 # 0019. Demo mode: a fresh throwaway vault, made through the store
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-16
 
 ## Context

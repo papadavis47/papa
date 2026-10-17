@@ -11,7 +11,7 @@ Built in Rust with [GPUI](https://www.gpui.rs), the GPU-accelerated UI framework
 
 <sub>The tour as an [MP4](docs/media/tour.mp4). Everything shown is the demo's invented family (`papa --demo`), not real data.</sub>
 
-> **Status:** early development, built in public. Phases 0–14 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode, PDF export, vault lock and backup, the relay server, sharing notes from the father's side, child mode for reading them, messages between father and child, and installable packages for Linux, macOS and Windows) are done. See [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** early development, built in public. Phases 0–15 (workspace and CI, app shell, local storage, notes, images, settings and themes, command palette, Vim mode, PDF export, vault lock and backup, the relay server, sharing notes from the father's side, child mode for reading them, messages between father and child, installable packages for Linux, macOS and Windows, and a demo mode with these screenshots) are done. See [PLAN.md](PLAN.md) for the roadmap.
 
 ## Try it
 
